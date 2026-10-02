@@ -14,7 +14,6 @@ class GemmaEngine(private val context: Context) {
     var isModelLoaded: Boolean = false
         private set
 
-    // Panduan Perilaku AI
     private val systemPrompt = """
         Kamu adalah TOWR, asisten AI pribadi on-device 100% offline dan aman yang dibuat oleh Natanael.
         
@@ -26,8 +25,10 @@ class GemmaEngine(private val context: Context) {
            - Hapus file ganda: {"action": "clean_duplicates", "folder": "Download", "delete_duplicates": true}
            - Satukan gambar ke PDF: {"action": "images_to_pdf", "images": ["foto1.jpg", "foto2.jpg"], "output_pdf": "Nama.pdf"}
            - Cek aktivitas aplikasi: {"action": "inspect_usage"}
+           - Kirim teks ke Telegram: {"action": "share_text", "target_app": "telegram", "text": "isi pesan"}
+           - Simpan catatan ke Notion: {"action": "save_note_for_notion", "title": "Judul", "content": "isi catatan"}
         
-        2. Jika pengguna bertanya hal umum (sains, geografi, sejarah, definisi, logika, santai), jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa tanda kurung kurawal JSON.
+        2. Jika pengguna bertanya hal umum (sains, geografi, sejarah, definisi, logika, santai), jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa format JSON.
     """.trimIndent()
 
     suspend fun loadModel(modelPath: String): String = withContext(Dispatchers.IO) {
@@ -36,7 +37,7 @@ class GemmaEngine(private val context: Context) {
             return@withContext "File model tidak ditemukan di lokasi: $modelPath"
         }
 
-        // Coba inisialisasi mesin LiteRT-LM dengan GPU, fallback ke CPU jika GPU tidak didukung
+        // Menggunakan mesin asli LiteRT-LM Engine untuk membaca file .litertlm
         try {
             val gpuConfig = EngineConfig(
                 modelPath = modelPath,
@@ -48,7 +49,6 @@ class GemmaEngine(private val context: Context) {
             isModelLoaded = true
             "Model Gemma On-Device (.litertlm) berhasil aktif via GPU HP!"
         } catch (eGpu: Exception) {
-            // Jika GPU gagal, coba inisialisasi ulang dengan mode CPU
             try {
                 val cpuConfig = EngineConfig(
                     modelPath = modelPath,
@@ -77,8 +77,8 @@ class GemmaEngine(private val context: Context) {
         try {
             val conversation = activeEngine.createConversation()
             val response = conversation.sendMessage(fullInput)
-            val outputText = response.text ?: response.toString()
-            outputText.trim()
+            // Membaca teks hasil percakapan langsung via toString()
+            response.toString().trim()
         } catch (e: Exception) {
             "Kendala komputasi AI: ${e.localizedMessage}"
         }
