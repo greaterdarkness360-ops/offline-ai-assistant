@@ -2,24 +2,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- KEAMANAN: Tanpa izin INTERNET agar 100% offline dan data privat tidak bocor -->
-
-    <!-- Izin Tool 1: Memindai file internal HP -->
+    <!-- 100% Offline Tanpa Izin INTERNET -->
     <uses-permission 
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-
-    <!-- Izin Tool 3: Memeriksa statistik pemakaian aplikasi latar belakang -->
     <uses-permission 
         android:name="android.permission.PACKAGE_USAGE_STATS" 
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Tool 2: Kemampuan membaca daftar aplikasi untuk membukanya -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
         </intent>
     </queries>
 
@@ -38,6 +37,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-    </application>
 
+        <!-- Jembatan Pembuka Galeri / Pemutar Video Resmi Android -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.offline.aiassistant.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
 </manifest>
