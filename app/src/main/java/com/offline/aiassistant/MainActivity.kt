@@ -1,6 +1,11 @@
 package com.offline.aiassistant
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
@@ -13,14 +18,27 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.offline.aiassistant.router.ActionRouter
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Memeriksa izin akses penyimpanan penuh saat aplikasi pertama kali dibuka
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            }
+        }
+
         setContent {
             MaterialTheme {
                 Surface(
@@ -36,13 +54,16 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun TowrMainScreen() {
+    val context = LocalContext.current
+    val actionRouter = remember { ActionRouter(context) }
+
     var queryText by remember { mutableStateOf("") }
     var terminalOutput by remember {
         mutableStateOf(
             "STATUS: SISTEM ONLINE\n" +
-            "OTAK: GEMMA LOCAL INT4\n" +
+            "OTAK: ACTION ROUTER & LOCAL GEMMA READY\n" +
             "JARINGAN: 100% OFFLINE TERISOLASI\n\n" +
-            "TOWR siap menerima instruksi native."
+            "TOWR siap mengeksekusi instruksi Anda."
         )
     }
 
@@ -58,6 +79,7 @@ fun TowrMainScreen() {
             .navigationBarsPadding()
             .padding(16.dp)
     ) {
+        // Bagian Header
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -79,6 +101,7 @@ fun TowrMainScreen() {
                 )
             }
 
+            // Lencana Offline
             Surface(
                 shape = RoundedCornerShape(8.dp),
                 color = Color(0xFF022C22),
@@ -108,6 +131,7 @@ fun TowrMainScreen() {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Monitor Layar Konsol TOWR
         Surface(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
@@ -127,6 +151,7 @@ fun TowrMainScreen() {
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Tombol Pintas Cepat (Quick Actions)
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -135,15 +160,21 @@ fun TowrMainScreen() {
                 queryText = "Cari file "
             }
             ActionChip(title = "🚀 Buka Aplikasi", accent = skyBlue, bg = containerColor) {
-                queryText = "Buka aplikasi "
+                queryText = "Buka "
             }
             ActionChip(title = "📊 Cek Aktivitas HP", accent = skyBlue, bg = containerColor) {
-                queryText = "Periksa aktivitas latar belakang"
+                val result = actionRouter.processInstruction("cek aktivitas")
+                terminalOutput += "\n\n> USER: Cek aktivitas HP\n> TOWR: $result"
+            }
+            ActionChip(title = "🧹 Cek File Ganda", accent = skyBlue, bg = containerColor) {
+                val result = actionRouter.processInstruction("cek file ganda")
+                terminalOutput += "\n\n> USER: Periksa file ganda di Download\n> TOWR: $result"
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
+        // Kolom Input & Tombol Kirim
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -170,8 +201,11 @@ fun TowrMainScreen() {
             Button(
                 onClick = {
                     if (queryText.isNotBlank()) {
-                        terminalOutput += "\n\n> USER: $queryText\n> TOWR: Mengeksekusi instruksi..."
+                        val userCmd = queryText
                         queryText = ""
+                        // Eksekusi nyata melalui Action Router
+                        val executionResult = actionRouter.processInstruction(userCmd)
+                        terminalOutput += "\n\n> USER: $userCmd\n> TOWR:\n$executionResult"
                     }
                 },
                 shape = RoundedCornerShape(12.dp),
