@@ -72,7 +72,7 @@ class ActionRouter(context: Context) {
                 } else {
                     val targetName = trimmed
                         .replace(Regex("(?i)^(hapus file|hapus)\\s*"), "")
-                        .replace(Regex("(?i)(semua|yang bernama|file)\\s*"), "")
+                        .replace(Regex("(?i)(semua|yang bernama|file|berkas)\\s*"), "")
                         .trim()
 
                     if (targetName.isBlank()) {
