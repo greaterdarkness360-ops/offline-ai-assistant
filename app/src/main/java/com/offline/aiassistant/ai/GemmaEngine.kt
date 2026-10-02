@@ -2,8 +2,10 @@ package com.offline.aiassistant.ai
 
 import android.content.Context
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -37,7 +39,6 @@ class GemmaEngine(private val context: Context) {
             return@withContext "File model tidak ditemukan di lokasi: $modelPath"
         }
 
-        // Menggunakan mesin asli LiteRT-LM Engine untuk membaca file .litertlm
         try {
             val gpuConfig = EngineConfig(
                 modelPath = modelPath,
@@ -75,9 +76,12 @@ class GemmaEngine(private val context: Context) {
         val fullInput = "$systemPrompt\n\nPengguna: $prompt\nTOWR:"
 
         try {
-            val conversation = activeEngine.createConversation()
+            // Mengatur Top-K = 1 agar cocok sempurna dengan GPU HP
+            val conversationConfig = ConversationConfig(
+                samplerConfig = SamplerConfig(topK = 1)
+            )
+            val conversation = activeEngine.createConversation(conversationConfig)
             val response = conversation.sendMessage(fullInput)
-            // Membaca teks hasil percakapan langsung via toString()
             response.toString().trim()
         } catch (e: Exception) {
             "Kendala komputasi AI: ${e.localizedMessage}"
