@@ -64,13 +64,17 @@ class ActionRouter(context: Context) {
         val lower = trimmed.lowercase()
 
         when {
-            // Perintah Menghapus File Tertentu
+            // EKSEKUSI PENGHAPUSAN FILE BERDASARKAN NAMA
             lower.startsWith("hapus file") || lower.startsWith("hapus") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat")) {
                     val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
                     RouterResponse(msg)
                 } else {
-                    val targetName = trimmed.replace(Regex("(?i)^(hapus file|hapus)\\s*"), "").trim()
+                    val targetName = trimmed
+                        .replace(Regex("(?i)^(hapus file|hapus)\\s*"), "")
+                        .replace(Regex("(?i)(semua|yang bernama|file)\\s*"), "")
+                        .trim()
+
                     if (targetName.isBlank()) {
                         RouterResponse("Sebutkan nama file yang ingin dihapus.")
                     } else {
@@ -155,7 +159,7 @@ class ActionRouter(context: Context) {
             }
             "search_files" -> {
                 val list = fileTools.searchFilesAdvanced(
-                    query = action.query ?: "",
+                    query = action.query ?: action.file_name ?: "",
                     minSizeMb = action.min_size_mb,
                     maxSizeMb = action.max_size_mb,
                     sortBy = action.sort_by
@@ -173,6 +177,7 @@ class ActionRouter(context: Context) {
             "images_to_pdf" -> RouterResponse(fileTools.convertImagesToPdf(action.images ?: emptyList(), action.output_pdf ?: "TOWR_Result.pdf"))
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
+            "share_wa" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", "whatsapp"))
             "share_text" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", action.target_app ?: "general"))
             "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
             "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
