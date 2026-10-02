@@ -72,5 +72,8 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("com.google.ai.edge.litert:litert-lm:1.0.1")
+
+    // Pustaka Resmi Google AI Edge On-Device
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.13.1")
+    implementation("com.google.mediapipe:tasks-genai:0.10.20")
 }
