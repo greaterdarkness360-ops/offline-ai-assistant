@@ -13,6 +13,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,6 +62,9 @@ fun TowrMainScreen() {
     val actionRouter = remember { ActionRouter(context) }
     val gemmaEngine = remember { GemmaEngine(context) }
 
+    // Pengatur gulir layar konsol
+    val consoleScrollState = rememberScrollState()
+
     var queryText by remember { mutableStateOf("") }
     var terminalOutput by remember {
         mutableStateOf(
@@ -71,6 +75,11 @@ fun TowrMainScreen() {
         )
     }
 
+    // Efek otomatis: Setiap kali teks bertambah, layar otomatis bergulir ke posisi paling bawah
+    LaunchedEffect(terminalOutput) {
+        consoleScrollState.animateScrollTo(consoleScrollState.maxValue)
+    }
+
     val skyBlue = Color(0xFF38BDF8)
     val electricBlue = Color(0xFF00E5FF)
     val containerColor = Color(0xFF0F172A)
@@ -78,19 +87,20 @@ fun TowrMainScreen() {
 
     fun detectAndLoadModel() {
         coroutineScope.launch {
-            terminalOutput += "\n\n> SISTEM: Mencari file model (.task / .litertlm) di folder Download HP..."
+            terminalOutput += "\n\n> SISTEM: [Memeriksa memori internal...]"
+            terminalOutput += "\n> SISTEM: Mencari file model (.task / .litertlm) di folder Download..."
             val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             val modelFile = downloadDir?.walkTopDown()?.maxDepth(2)?.firstOrNull {
                 it.isFile && (it.extension.equals("task", true) || it.extension.equals("litertlm", true) || it.extension.equals("bin", true))
             }
 
             if (modelFile != null) {
-                terminalOutput += "\n> SISTEM: Menemukan ${modelFile.name}. Memuat ke prosesor HP..."
+                terminalOutput += "\n> SISTEM: Menemukan model '${modelFile.name}'. Memuat bobot ke GPU HP..."
                 val result = gemmaEngine.loadModel(modelFile.absolutePath)
                 terminalOutput += "\n> TOWR: $result"
             } else {
-                terminalOutput += "\n> TOWR: File model belum ditemukan di folder Download.\n" +
-                        "Tips: Simpan file model Gemma di folder Download HP Anda, lalu sentuh '🧠 Muat Model AI' lagi."
+                terminalOutput += "\n> TOWR: File model belum ada di folder Download.\n" +
+                        "Tips: Simpan file model Gemma di folder Download HP Anda, lalu sentuh tombol '🧠 Muat Model AI' lagi."
             }
         }
     }
@@ -153,14 +163,19 @@ fun TowrMainScreen() {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Layar Konsol
+        // Monitor Layar Konsol (Dapat di-scroll bebas & auto-scroll)
         Surface(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             color = containerColor,
             border = BorderStroke(1.dp, electricBlue.copy(alpha = 0.35f))
         ) {
-            Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(consoleScrollState) // BISA DI-SCROLL KE ATAS & BAWAH
+                    .padding(16.dp)
+            ) {
                 Text(
                     text = terminalOutput,
                     color = skyBlue,
@@ -173,7 +188,7 @@ fun TowrMainScreen() {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Tombol Pintas Cepat (Berjalan di Background Tanpa Macet)
+        // Tombol Pintas Cepat (Quick Action Chips)
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -189,17 +204,22 @@ fun TowrMainScreen() {
             }
             ActionChip(title = "📊 Cek Aktivitas HP", accent = skyBlue, bg = containerColor) {
                 coroutineScope.launch {
-                    terminalOutput += "\n\n> USER: Cek aktivitas HP\n> TOWR: [Memeriksa statistik...]"
+                    terminalOutput += "\n\n> USER: Cek aktivitas HP"
+                    terminalOutput += "\n> TOWR: [Sedang membaca statistik sistem 24 jam terakhir...]"
                     val res = actionRouter.processInstruction("cek aktivitas")
                     terminalOutput += "\n> TOWR:\n$res"
                 }
             }
             ActionChip(title = "🧹 Cek File Ganda", accent = skyBlue, bg = containerColor) {
                 coroutineScope.launch {
-                    terminalOutput += "\n\n> USER: Periksa file ganda di Download\n> TOWR: [Memindai file kembar...]"
+                    terminalOutput += "\n\n> USER: Periksa file ganda di Download"
+                    terminalOutput += "\n> TOWR: [Sedang memindai dan membandingkan ukuran file di folder Download...]"
                     val res = actionRouter.processInstruction("cek file ganda")
                     terminalOutput += "\n> TOWR:\n$res"
                 }
+            }
+            ActionChip(title = "🗑️ Bersihkan Layar", accent = Color(0xFFF87171), bg = containerColor) {
+                terminalOutput = "STATUS: SISTEM ONLINE\nLayar konsol telah dibersihkan.\n\nTOWR siap menerima instruksi."
             }
         }
 
@@ -239,18 +259,19 @@ fun TowrMainScreen() {
                             terminalOutput += "\n\n> USER: $userPrompt"
 
                             if (gemmaEngine.isModelLoaded) {
-                                terminalOutput += "\n> TOWR (Berpikir...)"
+                                terminalOutput += "\n> TOWR: [Sedang menganalisis instruksi...]"
                                 val aiReply = gemmaEngine.askGemma(userPrompt)
                                 val trimmedReply = aiReply.trim()
 
                                 if (trimmedReply.startsWith("{") && trimmedReply.endsWith("}")) {
+                                    terminalOutput += "\n> TOWR: [Mengeksekusi alat native...]"
                                     val actionResult = actionRouter.processInstruction(trimmedReply)
-                                    terminalOutput += "\n> TOWR (Menjalankan Alat):\n$actionResult"
+                                    terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$actionResult"
                                 } else {
                                     terminalOutput += "\n> TOWR: $trimmedReply"
                                 }
                             } else {
-                                terminalOutput += "\n> TOWR: [Memproses...]"
+                                terminalOutput += "\n> TOWR: [Mengeksekusi...]"
                                 val directResult = actionRouter.processInstruction(userPrompt)
                                 terminalOutput += "\n> TOWR:\n$directResult"
                             }
