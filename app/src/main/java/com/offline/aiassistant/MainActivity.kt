@@ -1,11 +1,13 @@
 package com.offline.aiassistant
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
@@ -24,9 +26,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
+import com.offline.aiassistant.tools.FileItemInfo
+import com.offline.aiassistant.tools.FileTools
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,18 +60,52 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// Fungsi Resmi: Membuka File Apapun ke Aplikasi Bawaan HP (Galeri, Pemutar Video, PDF, dll.)
+fun openFileWithSystemApp(context: Context, filePath: String) {
+    try {
+        val file = File(filePath)
+        if (!file.exists()) {
+            Toast.makeText(context, "File tidak ditemukan di memori.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val uri: Uri = FileProvider.getUriForFile(context, "com.offline.aiassistant.provider", file)
+        val ext = file.extension.lowercase()
+        val mimeType = when (ext) {
+            "jpg", "jpeg", "png", "webp", "gif" -> "image/*"
+            "mp4", "mkv", "avi", "mov", "3gp" -> "video/*"
+            "pdf" -> "application/pdf"
+            "doc", "docx" -> "application/msword"
+            "txt" -> "text/plain"
+            "mp3", "wav", "m4a" -> "audio/*"
+            "apk" -> "application/vnd.android.package-archive"
+            else -> "*/*"
+        }
+
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(intent, "Buka dengan..."))
+    } catch (e: Exception) {
+        Toast.makeText(context, "Tidak ada aplikasi untuk membuka format ini.", Toast.LENGTH_SHORT).show()
+    }
+}
+
 @Composable
 fun TowrMainScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     
     val actionRouter = remember { ActionRouter(context) }
+    val fileTools = remember { FileTools(context) }
     val gemmaEngine = remember { GemmaEngine(context) }
 
-    // Pengatur gulir layar konsol
     val consoleScrollState = rememberScrollState()
 
     var queryText by remember { mutableStateOf("") }
+    var detectedDuplicates by remember { mutableStateOf<List<FileItemInfo>>(emptyList()) }
     var terminalOutput by remember {
         mutableStateOf(
             "STATUS: SISTEM ONLINE\n" +
@@ -75,8 +115,7 @@ fun TowrMainScreen() {
         )
     }
 
-    // Efek otomatis: Setiap kali teks bertambah, layar otomatis bergulir ke posisi paling bawah
-    LaunchedEffect(terminalOutput) {
+    LaunchedEffect(terminalOutput, detectedDuplicates.size) {
         consoleScrollState.animateScrollTo(consoleScrollState.maxValue)
     }
 
@@ -87,8 +126,7 @@ fun TowrMainScreen() {
 
     fun detectAndLoadModel() {
         coroutineScope.launch {
-            terminalOutput += "\n\n> SISTEM: [Memeriksa memori internal...]"
-            terminalOutput += "\n> SISTEM: Mencari file model (.task / .litertlm) di folder Download..."
+            terminalOutput += "\n\n> SISTEM: Mencari file model (.task / .litertlm) di folder Download..."
             val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             val modelFile = downloadDir?.walkTopDown()?.maxDepth(2)?.firstOrNull {
                 it.isFile && (it.extension.equals("task", true) || it.extension.equals("litertlm", true) || it.extension.equals("bin", true))
@@ -100,7 +138,7 @@ fun TowrMainScreen() {
                 terminalOutput += "\n> TOWR: $result"
             } else {
                 terminalOutput += "\n> TOWR: File model belum ada di folder Download.\n" +
-                        "Tips: Simpan file model Gemma di folder Download HP Anda, lalu sentuh tombol '🧠 Muat Model AI' lagi."
+                        "Tips: Simpan file model Gemma di folder Download HP Anda, lalu sentuh '🧠 Muat Model AI' lagi."
             }
         }
     }
@@ -119,61 +157,33 @@ fun TowrMainScreen() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(
-                    text = "TOWR",
-                    color = electricBlue,
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 2.sp
-                )
-                Text(
-                    text = "by: Natanael",
-                    color = skyBlue.copy(alpha = 0.85f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
+                Text(text = "TOWR", color = electricBlue, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp)
+                Text(text = "by: Natanael", color = skyBlue.copy(alpha = 0.85f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
 
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF022C22),
-                border = BorderStroke(1.dp, Color(0xFF10B981))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Color(0xFF10B981),
-                        modifier = Modifier.size(6.dp)
-                    ) {}
+            Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF022C22), border = BorderStroke(1.dp, Color(0xFF10B981))) {
+                Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(50), color = Color(0xFF10B981), modifier = Modifier.size(6.dp)) {}
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "100% Aman & Offline",
-                        color = Color(0xFF34D399),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text(text = "100% Aman & Offline", color = Color(0xFF34D399), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
         HorizontalDivider(color = electricBlue.copy(alpha = 0.25f), thickness = 1.dp)
-
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Monitor Layar Konsol (Dapat di-scroll bebas & auto-scroll)
+        // Monitor Layar Konsol & Daftar Kartu File Interaktif
         Surface(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             color = containerColor,
             border = BorderStroke(1.dp, electricBlue.copy(alpha = 0.35f))
         ) {
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(consoleScrollState) // BISA DI-SCROLL KE ATAS & BAWAH
+                    .verticalScroll(consoleScrollState)
                     .padding(16.dp)
             ) {
                 Text(
@@ -183,12 +193,89 @@ fun TowrMainScreen() {
                     fontFamily = FontFamily.Monospace,
                     lineHeight = 20.sp
                 )
+
+                // Jika ada file ganda yang terdeteksi, munculkan kartu tombol interaktif
+                if (detectedDuplicates.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "📁 PILIH FILE UNTUK DILIHAT ATAU DIHAPUS:",
+                        color = Color.Yellow,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    detectedDuplicates.forEach { fileItem ->
+                        val icon = when (fileItem.extension) {
+                            "jpg", "jpeg", "png", "webp" -> "🖼️"
+                            "mp4", "mkv", "mov" -> "🎬"
+                            "pdf", "doc", "docx" -> "📄"
+                            else -> "📦"
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF1E293B),
+                            border = BorderStroke(1.dp, Color(0xFF334155))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                    Text(text = "$icon ${fileItem.name}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                    Text(text = "${fileItem.sizeKb} KB", color = Color.Gray, fontSize = 10.sp)
+                                }
+
+                                Row {
+                                    // Tombol BUKA (Langsung buka Galeri/Video/File)
+                                    Button(
+                                        onClick = { openFileWithSystemApp(context, fileItem.path) },
+                                        shape = RoundedCornerShape(6.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = electricBlue),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(34.dp)
+                                    ) {
+                                        Text("👁️ Buka", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    Spacer(modifier = Modifier.width(6.dp))
+
+                                    // Tombol HAPUS (Hapus file spesifik ini)
+                                    Button(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                val success = fileTools.deleteSingleFile(fileItem.path)
+                                                if (success) {
+                                                    detectedDuplicates = detectedDuplicates.filter { it.path != fileItem.path }
+                                                    terminalOutput += "\n> TOWR: File '${fileItem.name}' berhasil dihapus secara permanen."
+                                                }
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.height(34.dp)
+                                    ) {
+                                        Text("🗑️", color = Color.White, fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Tombol Pintas Cepat (Quick Action Chips)
+        // Tombol Pintas Cepat
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -213,12 +300,14 @@ fun TowrMainScreen() {
             ActionChip(title = "🧹 Cek File Ganda", accent = skyBlue, bg = containerColor) {
                 coroutineScope.launch {
                     terminalOutput += "\n\n> USER: Periksa file ganda di Download"
-                    terminalOutput += "\n> TOWR: [Sedang memindai dan membandingkan ukuran file di folder Download...]"
-                    val res = actionRouter.processInstruction("cek file ganda")
-                    terminalOutput += "\n> TOWR:\n$res"
+                    terminalOutput += "\n> TOWR: [Sedang memindai file ganda di folder Download...]"
+                    val list = fileTools.getDuplicateFilesList("Download")
+                    detectedDuplicates = list
+                    terminalOutput += "\n> TOWR: Ditemukan ${list.size} file ganda. Silakan tinjau dan buka filenya di bawah."
                 }
             }
             ActionChip(title = "🗑️ Bersihkan Layar", accent = Color(0xFFF87171), bg = containerColor) {
+                detectedDuplicates = emptyList()
                 terminalOutput = "STATUS: SISTEM ONLINE\nLayar konsol telah dibersihkan.\n\nTOWR siap menerima instruksi."
             }
         }
@@ -233,9 +322,7 @@ fun TowrMainScreen() {
             OutlinedTextField(
                 value = queryText,
                 onValueChange = { queryText = it },
-                placeholder = {
-                    Text("Tanya atau beri perintah ke TOWR...", color = Color.Gray, fontSize = 13.sp)
-                },
+                placeholder = { Text("Tanya atau beri perintah ke TOWR...", color = Color.Gray, fontSize = 13.sp) },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -282,35 +369,20 @@ fun TowrMainScreen() {
                 colors = ButtonDefaults.buttonColors(containerColor = electricBlue),
                 modifier = Modifier.height(56.dp)
             ) {
-                Text(
-                    text = "KIRIM",
-                    color = Color.Black,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(text = "KIRIM", color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
 @Composable
-fun ActionChip(
-    title: String,
-    accent: Color,
-    bg: Color,
-    onTap: () -> Unit
-) {
+fun ActionChip(title: String, accent: Color, bg: Color, onTap: () -> Unit) {
     Surface(
         onClick = onTap,
         shape = RoundedCornerShape(20.dp),
         color = bg,
         border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
     ) {
-        Text(
-            text = title,
-            color = accent,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-        )
+        Text(text = title, color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
     }
 }
