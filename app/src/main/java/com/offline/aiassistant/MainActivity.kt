@@ -294,7 +294,7 @@ fun TowrMainScreen() {
                     terminalOutput += "\n\n> USER: Cek aktivitas HP"
                     terminalOutput += "\n> TOWR: [Sedang membaca statistik sistem 24 jam terakhir...]"
                     val res = actionRouter.processInstruction("cek aktivitas")
-                    terminalOutput += "\n> TOWR:\n$res"
+                    terminalOutput += "\n> TOWR:\n${res.message}"
                 }
             }
             ActionChip(title = "🧹 Cek File Ganda", accent = skyBlue, bg = containerColor) {
@@ -345,22 +345,55 @@ fun TowrMainScreen() {
                         coroutineScope.launch {
                             terminalOutput += "\n\n> USER: $userPrompt"
 
-                            if (gemmaEngine.isModelLoaded) {
+                            val lowerPrompt = userPrompt.lowercase().trim()
+
+                            // 1. JIKA PERINTAH LANGSUNG -> Langsung eksekusi via ActionRouter (Tanpa tunggu AI)
+                            val isDirectCommand = lowerPrompt.startsWith("hapus") || 
+                                                  lowerPrompt.startsWith("buka") || 
+                                                  lowerPrompt.startsWith("cari") || 
+                                                  lowerPrompt.startsWith("temukan") ||
+                                                  lowerPrompt.contains("duplikat") || 
+                                                  lowerPrompt.contains("file ganda")
+
+                            if (isDirectCommand) {
+                                terminalOutput += "\n> TOWR: [Mengeksekusi alat native...]"
+                                val actionResult = actionRouter.processInstruction(userPrompt)
+                                var display = actionResult.message
+                                if (actionResult.files.isNotEmpty()) {
+                                    display += "\n" + actionResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
+                                }
+                                terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$display"
+                            } 
+                            // 2. JIKA PERTANYAAN UMUM / PERCAKAPAN -> Lempar ke Gemma AI
+                            else if (gemmaEngine.isModelLoaded) {
                                 terminalOutput += "\n> TOWR: [Sedang menganalisis instruksi...]"
                                 val aiReply = gemmaEngine.askGemma(userPrompt)
-                                val trimmedReply = aiReply.trim()
+                                
+                                // Bersihkan jika dibungkus ```json ... ```
+                                val cleanJson = aiReply
+                                    .replace("```json", "")
+                                    .replace("```", "")
+                                    .trim()
 
-                                if (trimmedReply.startsWith("{") && trimmedReply.endsWith("}")) {
+                                if (cleanJson.contains("\"action\"") && cleanJson.contains("{") && cleanJson.contains("}")) {
                                     terminalOutput += "\n> TOWR: [Mengeksekusi alat native...]"
-                                    val actionResult = actionRouter.processInstruction(trimmedReply)
-                                    terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$actionResult"
+                                    val actionResult = actionRouter.processInstruction(cleanJson)
+                                    var display = actionResult.message
+                                    if (actionResult.files.isNotEmpty()) {
+                                        display += "\n" + actionResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
+                                    }
+                                    terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$display"
                                 } else {
-                                    terminalOutput += "\n> TOWR: $trimmedReply"
+                                    terminalOutput += "\n> TOWR: $aiReply"
                                 }
                             } else {
                                 terminalOutput += "\n> TOWR: [Mengeksekusi...]"
                                 val directResult = actionRouter.processInstruction(userPrompt)
-                                terminalOutput += "\n> TOWR:\n$directResult"
+                                var display = directResult.message
+                                if (directResult.files.isNotEmpty()) {
+                                    display += "\n" + directResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
+                                }
+                                terminalOutput += "\n> TOWR:\n$display"
                             }
                         }
                     }
