@@ -76,9 +76,9 @@ class GemmaEngine(private val context: Context) {
         val fullInput = "$systemPrompt\n\nPengguna: $prompt\nTOWR:"
 
         try {
-            // Mengatur Top-K = 1 agar cocok sempurna dengan GPU HP
+            // Melengkapi 3 parameter wajib: topK = 1 (untuk GPU), topP = 0.95, temperature = 0.8
             val conversationConfig = ConversationConfig(
-                samplerConfig = SamplerConfig(topK = 1)
+                samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = 0.8)
             )
             val conversation = activeEngine.createConversation(conversationConfig)
             val response = conversation.sendMessage(fullInput)
