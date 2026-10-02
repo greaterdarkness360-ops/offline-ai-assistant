@@ -11,9 +11,16 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 
+// Model Data untuk Setiap File yang Ditemukan
+data class FileItemInfo(
+    val name: String,
+    val path: String,
+    val sizeKb: Long,
+    val extension: String
+)
+
 class FileTools(private val context: Context) {
 
-    // 1. Mencari file di background thread (aman tanpa membuat HP macet)
     suspend fun searchFiles(query: String, extensionFilter: String? = null): List<String> = withContext(Dispatchers.IO) {
         val results = mutableListOf<String>()
         val searchDirs = listOf(
@@ -38,65 +45,68 @@ class FileTools(private val context: Context) {
         if (results.isEmpty()) listOf("Tidak ada file yang cocok dengan kata kunci '$query'.") else results
     }
 
-    // 2. Pembersihan File Ganda Kilat (Cek ukuran dulu, baru hash)
-    suspend fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String = withContext(Dispatchers.IO) {
+    // Mendapatkan Daftar File Ganda Terstruktur (Untuk Ditampilkan Sebagai Tombol Klik)
+    suspend fun getDuplicateFilesList(folderName: String = "Download"): List<FileItemInfo> = withContext(Dispatchers.IO) {
         val targetDir = when (folderName.lowercase()) {
             "documents", "dokumen" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
             "pictures", "foto", "gambar" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
             else -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         }
 
-        if (targetDir == null || !targetDir.exists()) {
-            return@withContext "Folder $folderName tidak ditemukan di memori HP."
-        }
+        if (targetDir == null || !targetDir.exists()) return@withContext emptyList()
 
-        // Kumpulkan file dan kelompokkan berdasarkan UKURAN file
         val allFiles = mutableListOf<File>()
         targetDir.walkTopDown().maxDepth(3).forEach { file ->
-            if (file.isFile && file.length() > 0) {
-                allFiles.add(file)
-            }
+            if (file.isFile && file.length() > 0) allFiles.add(file)
         }
 
         val potentialDuplicates = allFiles.groupBy { it.length() }.filter { it.value.size > 1 }
-
-        if (potentialDuplicates.isEmpty()) {
-            return@withContext "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
-        }
-
-        // Hanya hitung hash digital untuk file yang ukurannya sama persis
         val fileHashMap = mutableMapOf<String, File>()
-        val duplicatesFound = mutableListOf<File>()
+        val duplicatesFound = mutableListOf<FileItemInfo>()
 
         for ((_, filesWithSameSize) in potentialDuplicates) {
             for (file in filesWithSameSize) {
                 val hash = calculateFileHash(file)
                 if (fileHashMap.containsKey(hash)) {
-                    duplicatesFound.add(file)
+                    duplicatesFound.add(
+                        FileItemInfo(
+                            name = file.name,
+                            path = file.absolutePath,
+                            sizeKb = file.length() / 1024,
+                            extension = file.extension.lowercase()
+                        )
+                    )
                 } else {
                     fileHashMap[hash] = file
                 }
             }
         }
+        duplicatesFound
+    }
 
-        if (duplicatesFound.isEmpty()) {
-            return@withContext "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
-        }
-
-        if (deleteDuplicates) {
-            var deletedCount = 0
-            duplicatesFound.forEach { dupFile ->
-                if (dupFile.delete()) deletedCount++
-            }
-            "Berhasil menghapus $deletedCount file duplikat dari folder $folderName. File asli tetap aman."
-        } else {
-            val listText = duplicatesFound.take(15).joinToString("\n") { "- ${it.name} (${it.length() / 1024} KB)" }
-            val moreText = if (duplicatesFound.size > 15) "\n...dan ${duplicatesFound.size - 15} file lainnya." else ""
-            "Ditemukan ${duplicatesFound.size} file duplikat di folder $folderName:\n$listText$moreText\n\nKetik 'hapus file ganda' untuk membersihkannya."
+    // Menghapus satu file spesifik saat tombol Hapus ditekan
+    suspend fun deleteSingleFile(filePath: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val file = File(filePath)
+            file.exists() && file.delete()
+        } catch (e: Exception) {
+            false
         }
     }
 
-    // 3. Menyatukan Gambar ke Format PDF di Background Thread
+    suspend fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String = withContext(Dispatchers.IO) {
+        val duplicates = getDuplicateFilesList(folderName)
+        if (duplicates.isEmpty()) return@withContext "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
+
+        if (deleteDuplicates) {
+            var count = 0
+            duplicates.forEach { if (deleteSingleFile(it.path)) count++ }
+            "Berhasil membersihkan $count file ganda."
+        } else {
+            "Ditemukan ${duplicates.size} file duplikat. Anda dapat melihat dan menghapusnya satu per satu di bawah."
+        }
+    }
+
     suspend fun convertImagesToPdf(imageFileNames: List<String>, outputPdfName: String): String = withContext(Dispatchers.IO) {
         val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -107,18 +117,12 @@ class FileTools(private val context: Context) {
             val foundFile = listOf(picturesDir, downloadDir, documentsDir).mapNotNull { dir ->
                 dir?.walkTopDown()?.maxDepth(3)?.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
             }.firstOrNull()
-
-            if (foundFile != null) {
-                imageFiles.add(foundFile)
-            }
+            if (foundFile != null) imageFiles.add(foundFile)
         }
 
-        if (imageFiles.isEmpty()) {
-            return@withContext "Gagal: Tidak ada gambar yang ditemukan dari daftar yang Anda berikan."
-        }
+        if (imageFiles.isEmpty()) return@withContext "Gagal: Tidak ada gambar yang ditemukan."
 
         val pdfDocument = PdfDocument()
-
         try {
             imageFiles.forEachIndexed { index, file ->
                 val bitmap = BitmapFactory.decodeFile(file.absolutePath)
@@ -130,17 +134,12 @@ class FileTools(private val context: Context) {
                     bitmap.recycle()
                 }
             }
-
-            val validPdfName = if (outputPdfName.endsWith(".pdf", ignoreCase = true)) outputPdfName else "$outputPdfName.pdf"
-            val outputFile = File(documentsDir, validPdfName)
-
-            FileOutputStream(outputFile).use { outStream ->
-                pdfDocument.writeTo(outStream)
-            }
-
-            "Sukses! ${imageFiles.size} gambar berhasil disatukan menjadi PDF di:\n${outputFile.absolutePath}"
+            val validName = if (outputPdfName.endsWith(".pdf", true)) outputPdfName else "$outputPdfName.pdf"
+            val outputFile = File(documentsDir, validName)
+            FileOutputStream(outputFile).use { pdfDocument.writeTo(it) }
+            "Sukses! Gambar disatukan ke PDF di:\n${outputFile.absolutePath}"
         } catch (e: Exception) {
-            "Terjadi kendala saat menyusun PDF: ${e.localizedMessage}"
+            "Kendala PDF: ${e.localizedMessage}"
         } finally {
             pdfDocument.close()
         }
