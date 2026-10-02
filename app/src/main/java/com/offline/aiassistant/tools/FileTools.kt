@@ -11,41 +11,116 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 
-// Model Data untuk Setiap File yang Ditemukan
 data class FileItemInfo(
     val name: String,
     val path: String,
     val sizeKb: Long,
-    val extension: String
+    val extension: String,
+    val lastModified: Long = 0L
 )
 
 class FileTools(private val context: Context) {
 
-    suspend fun searchFiles(query: String, extensionFilter: String? = null): List<String> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<String>()
+    // 1. Pencarian File Cerdas
+    suspend fun searchFilesAdvanced(
+        query: String = "",
+        minSizeMb: Double? = null,
+        maxSizeMb: Double? = null,
+        sortBy: String? = null,
+        extensionFilter: String? = null
+    ): List<FileItemInfo> = withContext(Dispatchers.IO) {
+        val results = mutableListOf<FileItemInfo>()
         val searchDirs = listOf(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         )
 
+        val minBytes = minSizeMb?.let { (it * 1024 * 1024).toLong() }
+        val maxBytes = maxSizeMb?.let { (it * 1024 * 1024).toLong() }
+
         for (dir in searchDirs) {
             if (dir != null && dir.exists()) {
                 dir.walkTopDown().maxDepth(4).forEach { file ->
                     if (file.isFile) {
-                        val matchesName = file.name.contains(query, ignoreCase = true)
+                        val matchesName = query.isBlank() || file.name.contains(query, ignoreCase = true)
                         val matchesExt = extensionFilter == null || file.extension.equals(extensionFilter, ignoreCase = true)
-                        if (matchesName && matchesExt) {
-                            results.add("${file.name} (${file.length() / 1024} KB) -> ${file.absolutePath}")
+                        val matchesMin = minBytes == null || file.length() >= minBytes
+                        val matchesMax = maxBytes == null || file.length() <= maxBytes
+
+                        if (matchesName && matchesExt && matchesMin && matchesMax) {
+                            results.add(
+                                FileItemInfo(
+                                    name = file.name,
+                                    path = file.absolutePath,
+                                    sizeKb = file.length() / 1024,
+                                    extension = file.extension.lowercase(),
+                                    lastModified = file.lastModified()
+                                )
+                            )
                         }
                     }
                 }
             }
         }
-        if (results.isEmpty()) listOf("Tidak ada file yang cocok dengan kata kunci '$query'.") else results
+
+        when (sortBy?.lowercase()) {
+            "largest", "terbesar" -> results.sortByDescending { it.sizeKb }
+            "smallest", "terkecil" -> results.sortBy { it.sizeKb }
+            "oldest", "lama", "terlama" -> results.sortBy { it.lastModified }
+            "newest", "baru", "terbaru" -> results.sortByDescending { it.lastModified }
+        }
+
+        results.take(20)
     }
 
-    // Mendapatkan Daftar File Ganda Terstruktur (Untuk Ditampilkan Sebagai Tombol Klik)
+    // 2. Menghapus File Tertentu Berdasarkan Nama yang Disuruh Pengguna
+    suspend fun deleteFileByName(fileNameQuery: String): String = withContext(Dispatchers.IO) {
+        val searchDirs = listOf(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+        )
+
+        val matchedFiles = mutableListOf<File>()
+        for (dir in searchDirs) {
+            if (dir != null && dir.exists()) {
+                dir.walkTopDown().maxDepth(4).forEach { file ->
+                    if (file.isFile && file.name.contains(fileNameQuery.trim(), ignoreCase = true)) {
+                        matchedFiles.add(file)
+                    }
+                }
+            }
+        }
+
+        if (matchedFiles.isEmpty()) {
+            return@withContext "Tidak ditemukan file dengan nama '$fileNameQuery' untuk dihapus."
+        }
+
+        var deletedCount = 0
+        val deletedNames = mutableListOf<String>()
+        for (file in matchedFiles) {
+            val name = file.name
+            if (file.delete()) {
+                deletedCount++
+                deletedNames.add(name)
+            }
+        }
+
+        "Berhasil menghapus $deletedCount file:\n" + deletedNames.joinToString("\n") { "- $it" }
+    }
+
+    // 3. Menghapus 1 File Spesifik lewat Jalur Path (Tombol Tong Sampah)
+    suspend fun deleteSingleFile(filePath: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val file = File(filePath)
+            file.exists() && file.delete()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // 4. Daftar File Ganda
     suspend fun getDuplicateFilesList(folderName: String = "Download"): List<FileItemInfo> = withContext(Dispatchers.IO) {
         val targetDir = when (folderName.lowercase()) {
             "documents", "dokumen" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
@@ -73,7 +148,8 @@ class FileTools(private val context: Context) {
                             name = file.name,
                             path = file.absolutePath,
                             sizeKb = file.length() / 1024,
-                            extension = file.extension.lowercase()
+                            extension = file.extension.lowercase(),
+                            lastModified = file.lastModified()
                         )
                     )
                 } else {
@@ -82,16 +158,6 @@ class FileTools(private val context: Context) {
             }
         }
         duplicatesFound
-    }
-
-    // Menghapus satu file spesifik saat tombol Hapus ditekan
-    suspend fun deleteSingleFile(filePath: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val file = File(filePath)
-            file.exists() && file.delete()
-        } catch (e: Exception) {
-            false
-        }
     }
 
     suspend fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String = withContext(Dispatchers.IO) {
@@ -103,7 +169,7 @@ class FileTools(private val context: Context) {
             duplicates.forEach { if (deleteSingleFile(it.path)) count++ }
             "Berhasil membersihkan $count file ganda."
         } else {
-            "Ditemukan ${duplicates.size} file duplikat. Anda dapat melihat dan menghapusnya satu per satu di bawah."
+            "Ditemukan ${duplicates.size} file duplikat."
         }
     }
 
