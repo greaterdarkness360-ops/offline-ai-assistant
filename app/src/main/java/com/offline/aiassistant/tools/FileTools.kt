@@ -21,7 +21,54 @@ data class FileItemInfo(
 
 class FileTools(private val context: Context) {
 
-    // 1. Pencarian File Cerdas
+    // 1. FUNGSI UTAMA: Menghapus file berdasarkan nama/kata kunci (misal: "PANAT-kas")
+    suspend fun deleteFileByName(fileNameQuery: String): String = withContext(Dispatchers.IO) {
+        val searchDirs = listOf(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+        )
+
+        val matchedFiles = mutableListOf<File>()
+        for (dir in searchDirs) {
+            if (dir != null && dir.exists()) {
+                dir.walkTopDown().maxDepth(4).forEach { file ->
+                    if (file.isFile && file.name.contains(fileNameQuery.trim(), ignoreCase = true)) {
+                        matchedFiles.add(file)
+                    }
+                }
+            }
+        }
+
+        if (matchedFiles.isEmpty()) {
+            return@withContext "Tidak ditemukan file yang cocok dengan nama '$fileNameQuery' untuk dihapus."
+        }
+
+        var deletedCount = 0
+        val deletedNames = mutableListOf<String>()
+        for (file in matchedFiles) {
+            val name = file.name
+            if (file.delete()) {
+                deletedCount++
+                deletedNames.add(name)
+            }
+        }
+
+        "Berhasil menghapus $deletedCount file dari memori HP:\n" + 
+        deletedNames.joinToString("\n") { "- $it" }
+    }
+
+    // 2. FUNGSI TOMBOL: Menghapus satu file spesifik lewat jalur path (untuk tombol tempat sampah merah)
+    suspend fun deleteSingleFile(filePath: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val file = File(filePath)
+            file.exists() && file.delete()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // 3. Pencarian File
     suspend fun searchFilesAdvanced(
         query: String = "",
         minSizeMb: Double? = null,
@@ -72,52 +119,6 @@ class FileTools(private val context: Context) {
         }
 
         results.take(20)
-    }
-
-    // 2. Menghapus File Tertentu Berdasarkan Nama yang Disuruh Pengguna
-    suspend fun deleteFileByName(fileNameQuery: String): String = withContext(Dispatchers.IO) {
-        val searchDirs = listOf(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-        )
-
-        val matchedFiles = mutableListOf<File>()
-        for (dir in searchDirs) {
-            if (dir != null && dir.exists()) {
-                dir.walkTopDown().maxDepth(4).forEach { file ->
-                    if (file.isFile && file.name.contains(fileNameQuery.trim(), ignoreCase = true)) {
-                        matchedFiles.add(file)
-                    }
-                }
-            }
-        }
-
-        if (matchedFiles.isEmpty()) {
-            return@withContext "Tidak ditemukan file dengan nama '$fileNameQuery' untuk dihapus."
-        }
-
-        var deletedCount = 0
-        val deletedNames = mutableListOf<String>()
-        for (file in matchedFiles) {
-            val name = file.name
-            if (file.delete()) {
-                deletedCount++
-                deletedNames.add(name)
-            }
-        }
-
-        "Berhasil menghapus $deletedCount file:\n" + deletedNames.joinToString("\n") { "- $it" }
-    }
-
-    // 3. Menghapus 1 File Spesifik lewat Jalur Path (Tombol Tong Sampah)
-    suspend fun deleteSingleFile(filePath: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val file = File(filePath)
-            file.exists() && file.delete()
-        } catch (e: Exception) {
-            false
-        }
     }
 
     // 4. Daftar File Ganda
