@@ -1,10 +1,11 @@
 package com.offline.aiassistant.tools
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfDocument
 import android.os.Environment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -12,8 +13,8 @@ import java.security.MessageDigest
 
 class FileTools(private val context: Context) {
 
-    // 1. Mencari file di folder penyimpanan utama (Download, Documents, Pictures)
-    fun searchFiles(query: String, extensionFilter: String? = null): List<String> {
+    // 1. Mencari file di background thread (aman tanpa membuat HP macet)
+    suspend fun searchFiles(query: String, extensionFilter: String? = null): List<String> = withContext(Dispatchers.IO) {
         val results = mutableListOf<String>()
         val searchDirs = listOf(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
@@ -34,11 +35,11 @@ class FileTools(private val context: Context) {
                 }
             }
         }
-        return if (results.isEmpty()) listOf("Tidak ada file yang cocok dengan kata kunci '$query'.") else results
+        if (results.isEmpty()) listOf("Tidak ada file yang cocok dengan kata kunci '$query'.") else results
     }
 
-    // 2. Mendeteksi dan Menghapus File Ganda Berdasarkan Ukuran & Hash Digital
-    fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String {
+    // 2. Pembersihan File Ganda Kilat (Cek ukuran dulu, baru hash)
+    suspend fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String = withContext(Dispatchers.IO) {
         val targetDir = when (folderName.lowercase()) {
             "documents", "dokumen" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
             "pictures", "foto", "gambar" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
@@ -46,14 +47,29 @@ class FileTools(private val context: Context) {
         }
 
         if (targetDir == null || !targetDir.exists()) {
-            return "Folder $folderName tidak ditemukan di memori HP."
+            return@withContext "Folder $folderName tidak ditemukan di memori HP."
         }
 
+        // Kumpulkan file dan kelompokkan berdasarkan UKURAN file
+        val allFiles = mutableListOf<File>()
+        targetDir.walkTopDown().maxDepth(3).forEach { file ->
+            if (file.isFile && file.length() > 0) {
+                allFiles.add(file)
+            }
+        }
+
+        val potentialDuplicates = allFiles.groupBy { it.length() }.filter { it.value.size > 1 }
+
+        if (potentialDuplicates.isEmpty()) {
+            return@withContext "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
+        }
+
+        // Hanya hitung hash digital untuk file yang ukurannya sama persis
         val fileHashMap = mutableMapOf<String, File>()
         val duplicatesFound = mutableListOf<File>()
 
-        targetDir.walkTopDown().maxDepth(3).forEach { file ->
-            if (file.isFile && file.length() > 0) {
+        for ((_, filesWithSameSize) in potentialDuplicates) {
+            for (file in filesWithSameSize) {
                 val hash = calculateFileHash(file)
                 if (fileHashMap.containsKey(hash)) {
                     duplicatesFound.add(file)
@@ -64,23 +80,24 @@ class FileTools(private val context: Context) {
         }
 
         if (duplicatesFound.isEmpty()) {
-            return "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
+            return@withContext "Pemeriksaan selesai: Tidak ditemukan file ganda di folder $folderName."
         }
 
-        return if (deleteDuplicates) {
+        if (deleteDuplicates) {
             var deletedCount = 0
             duplicatesFound.forEach { dupFile ->
                 if (dupFile.delete()) deletedCount++
             }
             "Berhasil menghapus $deletedCount file duplikat dari folder $folderName. File asli tetap aman."
         } else {
-            val listText = duplicatesFound.joinToString("\n") { "- ${it.name} (${it.length() / 1024} KB)" }
-            "Ditemukan ${duplicatesFound.size} file duplikat di folder $folderName:\n$listText\n\nKetik 'hapus file ganda' untuk menghapusnya."
+            val listText = duplicatesFound.take(15).joinToString("\n") { "- ${it.name} (${it.length() / 1024} KB)" }
+            val moreText = if (duplicatesFound.size > 15) "\n...dan ${duplicatesFound.size - 15} file lainnya." else ""
+            "Ditemukan ${duplicatesFound.size} file duplikat di folder $folderName:\n$listText$moreText\n\nKetik 'hapus file ganda' untuk membersihkannya."
         }
     }
 
-    // 3. Menyatukan Gambar ke Format PDF (100% Native Offline)
-    fun convertImagesToPdf(imageFileNames: List<String>, outputPdfName: String): String {
+    // 3. Menyatukan Gambar ke Format PDF di Background Thread
+    suspend fun convertImagesToPdf(imageFileNames: List<String>, outputPdfName: String): String = withContext(Dispatchers.IO) {
         val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
         val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
@@ -97,7 +114,7 @@ class FileTools(private val context: Context) {
         }
 
         if (imageFiles.isEmpty()) {
-            return "Gagal: Tidak ada gambar yang ditemukan dari daftar yang Anda berikan."
+            return@withContext "Gagal: Tidak ada gambar yang ditemukan dari daftar yang Anda berikan."
         }
 
         val pdfDocument = PdfDocument()
@@ -108,8 +125,7 @@ class FileTools(private val context: Context) {
                 if (bitmap != null) {
                     val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, index + 1).create()
                     val page = pdfDocument.startPage(pageInfo)
-                    val canvas = page.canvas
-                    canvas.drawBitmap(bitmap, 0f, 0f, null)
+                    page.canvas.drawBitmap(bitmap, 0f, 0f, null)
                     pdfDocument.finishPage(page)
                     bitmap.recycle()
                 }
@@ -122,15 +138,14 @@ class FileTools(private val context: Context) {
                 pdfDocument.writeTo(outStream)
             }
 
-            return "Sukses! ${imageFiles.size} gambar berhasil disatukan menjadi PDF di:\n${outputFile.absolutePath}"
+            "Sukses! ${imageFiles.size} gambar berhasil disatukan menjadi PDF di:\n${outputFile.absolutePath}"
         } catch (e: Exception) {
-            return "Terjadi kendala saat menyusun PDF: ${e.localizedMessage}"
+            "Terjadi kendala saat menyusun PDF: ${e.localizedMessage}"
         } finally {
             pdfDocument.close()
         }
     }
 
-    // Fungsi pembantu untuk membuat sidik jari unik file (MD5)
     private fun calculateFileHash(file: File): String {
         val digest = MessageDigest.getInstance("MD5")
         FileInputStream(file).use { fis ->
