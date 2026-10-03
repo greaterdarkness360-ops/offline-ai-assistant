@@ -3,81 +3,523 @@ package com.offline.aiassistant
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Environment
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import com.offline.aiassistant.ai.GemmaEngine
-import com.offline.aiassistant.router.ActionRouter
-import com.offline.aiassistant.tools.FileItemInfo
-import com.offline.aiassistant.tools.FileTools
 import kotlinx.coroutines.launch
 import java.io.File
 
+// =========================================================================
+// PALET WARNA TEMA NATIVE CYBER-DARK TOWR
+// =========================================================================
+val TowrBgDark = Color(0xFF070B14)
+val TowrSurfaceDark = Color(0xFF0F172A)
+val TowrSurfaceElevated = Color(0xFF1E293B)
+val TowrBorderDim = Color(0xFF334155)
+val TowrElectricCyan = Color(0xFF00E5FF)
+val TowrSkyBlue = Color(0xFF38BDF8)
+val TowrEmeraldGreen = Color(0xFF10B981)
+val TowrGreenBg = Color(0xFF022C22)
+val TowrTextPrimary = Color(0xFFF8FAFC)
+val TowrTextSecondary = Color(0xFF94A3B8)
+
+// =========================================================================
+// MODEL DATA OBROLAN & EKSEKUSI TOOL
+// =========================================================================
+enum class MessageSender { USER, TOWR, SYSTEM }
+
+data class FileSearchResult(
+    val fileName: String,
+    val filePath: String,
+    val fileSizeFormatted: String,
+    val lastModifiedFormatted: String,
+    val extension: String
+)
+
+data class ToolExecutionLog(
+    val toolName: String,
+    val actionDetail: String,
+    val latencyMs: Long,
+    val isSuccess: Boolean
+)
+
+data class TowrChatMessage(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val sender: MessageSender,
+    val messageText: String,
+    val timestamp: String,
+    val thinkingProcess: List<ToolExecutionLog>? = null,
+    val foundFiles: List<FileSearchResult>? = null
+)
+
+// =========================================================================
+// ACTIVITY UTAMA
+// =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                    data = Uri.parse("package:$packageName")
-                }
-                startActivity(intent)
+        setContent {
+            TowrTheme {
+                TowrMainScreen()
             }
         }
+    }
+}
 
-        setContent {
-            MaterialTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFF070B14)
-                ) {
-                    TowrMainScreen()
+@Composable
+fun TowrTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            background = TowrBgDark,
+            surface = TowrSurfaceDark,
+            primary = TowrElectricCyan,
+            secondary = TowrSkyBlue
+        ),
+        content = content
+    )
+}
+
+// =========================================================================
+// LAYAR UTAMA (BUBBLE CHAT & INTERAKTIF)
+// =========================================================================
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TowrMainScreen() {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    var inputPrompt by remember { mutableStateOf("") }
+
+    val messages = remember {
+        mutableStateListOf(
+            TowrChatMessage(
+                sender = MessageSender.USER,
+                messageText = "Cari file laporan_keuangan.pdf, lalu buka aplikasi Kalkulator.",
+                timestamp = "12:45"
+            ),
+            TowrChatMessage(
+                sender = MessageSender.TOWR,
+                messageText = "File laporan keuangan berhasil ditemukan di penyimpanan lokal Anda. Aplikasi Kalkulator telah dibuka otomatis.",
+                timestamp = "12:45",
+                thinkingProcess = listOf(
+                    ToolExecutionLog(
+                        toolName = "FileScanner.searchLocal()",
+                        actionDetail = "Query: 'laporan_keuangan.pdf' | Path: /storage/emulated/0/Documents/",
+                        latencyMs = 14,
+                        isSuccess = true
+                    ),
+                    ToolExecutionLog(
+                        toolName = "AppLauncher.launchIntent()",
+                        actionDetail = "Package: com.android.calculator | Action: MAIN",
+                        latencyMs = 8,
+                        isSuccess = true
+                    )
+                ),
+                foundFiles = listOf(
+                    FileSearchResult(
+                        fileName = "Laporan_Keuangan_Q3_Final.pdf",
+                        filePath = "/storage/emulated/0/Documents/Laporan_Keuangan_Q3_Final.pdf",
+                        fileSizeFormatted = "2.4 MB",
+                        lastModifiedFormatted = "Kemarin, 16:30",
+                        extension = "PDF"
+                    )
+                )
+            )
+        )
+    }
+
+    Scaffold(
+        containerColor = TowrBgDark,
+        topBar = { TowrTopBar() },
+        bottomBar = {
+            TowrInputBar(
+                inputPrompt = inputPrompt,
+                onPromptChanged = { inputPrompt = it },
+                onSendClicked = {
+                    if (inputPrompt.isNotBlank()) {
+                        val txt = inputPrompt
+                        inputPrompt = ""
+                        messages.add(
+                            TowrChatMessage(
+                                sender = MessageSender.USER,
+                                messageText = txt,
+                                timestamp = "Sekarang"
+                            )
+                        )
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(messages.size - 1)
+                        }
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            QuickActionChipsRow(onChipClicked = { inputPrompt = it })
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                items(messages, key = { it.id }) { msg ->
+                    if (msg.sender == MessageSender.USER) {
+                        UserChatBubble(message = msg)
+                    } else {
+                        TowrAgentBubble(
+                            message = msg,
+                            onFileClick = { file ->
+                                openFileWithSystemApp(context, file.filePath)
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-// Fungsi Resmi: Membuka File Apapun ke Aplikasi Bawaan HP (Galeri, Pemutar Video, PDF, dll.)
+// =========================================================================
+// HEADER & QUICK ACTION CHIPS
+// =========================================================================
+@Composable
+fun TowrTopBar() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(TowrBgDark)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(TowrSurfaceElevated)
+                        .border(1.5.dp, TowrElectricCyan, RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("T", color = TowrElectricCyan, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    Text("Gemma 3 INT4 • On-Device", color = TowrSkyBlue, fontSize = 12.sp)
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(TowrGreenBg)
+                    .border(1.dp, TowrEmeraldGreen, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(TowrEmeraldGreen))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("100% OFFLINE", color = TowrEmeraldGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Divider(color = TowrBorderDim.copy(alpha = 0.5f), thickness = 1.dp)
+    }
+}
+
+@Composable
+fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
+    val chips = listOf("🔍 Cari File Lokal", "🚀 Luncurkan Aplikasi", "📊 Status NPU & RAM")
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        chips.forEach { chip ->
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(TowrSurfaceDark)
+                    .border(1.dp, TowrSkyBlue.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                    .clickable { onChipClicked(chip.substring(3)) }
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(chip, color = TowrSkyBlue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+// =========================================================================
+// BUBBLE PESAN USER
+// =========================================================================
+@Composable
+fun UserChatBubble(message: TowrChatMessage) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Box(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp))
+                .background(TowrSurfaceElevated)
+                .border(1.dp, TowrSkyBlue.copy(alpha = 0.5f), RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp))
+                .padding(14.dp)
+        ) {
+            Column {
+                Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 20.sp)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(message.timestamp, color = TowrTextSecondary, fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+            }
+        }
+    }
+}
+
+// =========================================================================
+// BUBBLE PESAN TOWR (LIPATAN PROSES BERPIKIR + HASIL BERKAS)
+// =========================================================================
+@Composable
+fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                .background(TowrSurfaceDark)
+                .border(1.2.dp, TowrElectricCyan.copy(alpha = 0.7f), RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                .padding(14.dp)
+        ) {
+            Column {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("TOWR On-Device Intelligence", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(message.timestamp, color = TowrTextSecondary, fontSize = 10.sp)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 1. Kartu Lipatan Proses Berpikir
+                if (!message.thinkingProcess.isNullOrEmpty()) {
+                    CollapsibleThinkingCard(thinkingLogs = message.thinkingProcess)
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                // 2. Kartu Hasil Berkas Sekali Ketuk
+                if (!message.foundFiles.isNullOrEmpty()) {
+                    message.foundFiles.forEach { fileItem ->
+                        SingleTapFileCard(file = fileItem, onFileClick = { onFileClick(fileItem) })
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+                }
+
+                // 3. Teks Balasan TOWR
+                Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 21.sp)
+            }
+        }
+    }
+}
+
+@Composable
+fun CollapsibleThinkingCard(thinkingLogs: List<ToolExecutionLog>) {
+    var isExpanded by remember { mutableStateOf(false) }
+    val arrowRotation by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f, label = "arrowAnim")
+    val totalLatency = thinkingLogs.sumOf { it.latencyMs }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(TowrSurfaceElevated)
+            .border(1.dp, TowrBorderDim, RoundedCornerShape(10.dp))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { isExpanded = !isExpanded }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = TowrEmeraldGreen, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Log Eksekusi (${thinkingLogs.size} Tool • ${totalLatency}ms)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = TowrSkyBlue, modifier = Modifier.size(18.dp).rotate(arrowRotation))
+        }
+
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Divider(color = TowrBorderDim.copy(alpha = 0.5f), thickness = 0.8.dp)
+                Spacer(modifier = Modifier.height(8.dp))
+                thinkingLogs.forEachIndexed { index, log ->
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        Text("[${index + 1}]", color = TowrElectricCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(log.toolName, color = TowrElectricCyan, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+                                Text("${log.latencyMs}ms", color = TowrEmeraldGreen, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            Text(log.actionDetail, color = TowrTextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, lineHeight = 15.sp)
+                        }
+                    }
+                    if (index < thinkingLogs.size - 1) Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SingleTapFileCard(file: FileSearchResult, onFileClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(TowrSurfaceElevated)
+            .border(1.2.dp, TowrElectricCyan, RoundedCornerShape(12.dp))
+            .clickable { onFileClick() }
+            .padding(12.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFDC2626).copy(alpha = 0.2f))
+                    .border(1.dp, Color(0xFFEF4444), RoundedCornerShape(8.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(file.extension, color = Color(0xFFFCA5A5), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(file.fileName, color = TowrTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text("${file.fileSizeFormatted} • ${file.lastModifiedFormatted}", color = TowrTextSecondary, fontSize = 11.sp)
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+                onClick = onFileClick,
+                colors = ButtonDefaults.buttonColors(containerColor = TowrElectricCyan),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.height(34.dp)
+            ) {
+                Text("Buka", color = TowrBgDark, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun TowrInputBar(inputPrompt: String, onPromptChanged: (String) -> Unit, onSendClicked: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(TowrBgDark)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        OutlinedTextField(
+            value = inputPrompt,
+            onValueChange = onPromptChanged,
+            placeholder = { Text("Beri instruksi ke TOWR...", color = TowrTextSecondary, fontSize = 13.sp) },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = TowrElectricCyan,
+                unfocusedBorderColor = TowrBorderDim,
+                focusedTextColor = TowrTextPrimary,
+                unfocusedTextColor = TowrTextPrimary,
+                focusedContainerColor = TowrSurfaceDark,
+                unfocusedContainerColor = TowrSurfaceDark
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.weight(1f),
+            maxLines = 3
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Button(
+            onClick = onSendClicked,
+            colors = ButtonDefaults.buttonColors(containerColor = TowrElectricCyan),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.size(54.dp),
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Icon(Icons.Default.Send, contentDescription = "Kirim", tint = TowrBgDark, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+// =========================================================================
+// UTILITAS BUKA BERKAS (DISINKRONKAN DENGAN MANIFEST ANDA)
+// =========================================================================
 fun openFileWithSystemApp(context: Context, filePath: String) {
     try {
         val file = File(filePath)
         if (!file.exists()) {
-            Toast.makeText(context, "File tidak ditemukan di memori.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Berkas tidak ditemukan: $filePath", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val uri: Uri = FileProvider.getUriForFile(context, "com.offline.aiassistant.provider", file)
-        val ext = file.extension.lowercase()
-        val mimeType = when (ext) {
-            "jpg", "jpeg", "png", "webp", "gif" -> "image/*"
-            "mp4", "mkv", "avi", "mov", "3gp" -> "video/*"
+        // Tepat memanggil authority dari manifest Anda
+        val uri: Uri = FileProvider.getUriForFile(
+            context,
+            "com.offline.aiassistant.provider",
+            file
+        )
+
+        val extension = file.extension.lowercase()
+        val mimeType = when (extension) {
             "pdf" -> "application/pdf"
-            "doc", "docx" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "doc" -> "application/msword"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "jpg", "jpeg", "png" -> "image/*"
             "txt" -> "text/plain"
-            "mp3", "wav", "m4a" -> "audio/*"
             "apk" -> "application/vnd.android.package-archive"
             else -> "*/*"
         }
@@ -87,335 +529,11 @@ fun openFileWithSystemApp(context: Context, filePath: String) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(Intent.createChooser(intent, "Buka dengan..."))
+
+        val chooser = Intent.createChooser(intent, "Buka berkas dengan...")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
     } catch (e: Exception) {
-        Toast.makeText(context, "Tidak ada aplikasi untuk membuka format ini.", Toast.LENGTH_SHORT).show()
-    }
-}
-
-@Composable
-fun TowrMainScreen() {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    
-    val actionRouter = remember { ActionRouter(context) }
-    val fileTools = remember { FileTools(context) }
-    val gemmaEngine = remember { GemmaEngine(context) }
-
-    val consoleScrollState = rememberScrollState()
-
-    var queryText by remember { mutableStateOf("") }
-    var detectedDuplicates by remember { mutableStateOf<List<FileItemInfo>>(emptyList()) }
-    var terminalOutput by remember {
-        mutableStateOf(
-            "STATUS: SISTEM ONLINE\n" +
-            "OTAK: ACTION ROUTER & LOCAL GEMMA READY\n" +
-            "JARINGAN: 100% OFFLINE TERISOLASI\n\n" +
-            "TOWR siap mengeksekusi instruksi Anda."
-        )
-    }
-
-    LaunchedEffect(terminalOutput, detectedDuplicates.size) {
-        consoleScrollState.animateScrollTo(consoleScrollState.maxValue)
-    }
-
-    val skyBlue = Color(0xFF38BDF8)
-    val electricBlue = Color(0xFF00E5FF)
-    val containerColor = Color(0xFF0F172A)
-    val borderDim = Color(0xFF1E293B)
-
-    fun detectAndLoadModel() {
-        coroutineScope.launch {
-            terminalOutput += "\n\n> SISTEM: Mencari file model (.task / .litertlm) di folder Download..."
-            val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val modelFile = downloadDir?.walkTopDown()?.maxDepth(2)?.firstOrNull {
-                it.isFile && (it.extension.equals("task", true) || it.extension.equals("litertlm", true) || it.extension.equals("bin", true))
-            }
-
-            if (modelFile != null) {
-                terminalOutput += "\n> SISTEM: Menemukan model '${modelFile.name}'. Memuat bobot ke GPU HP..."
-                val result = gemmaEngine.loadModel(modelFile.absolutePath)
-                terminalOutput += "\n> TOWR: $result"
-            } else {
-                terminalOutput += "\n> TOWR: File model belum ada di folder Download.\n" +
-                        "Tips: Simpan file model Gemma di folder Download HP Anda, lalu sentuh '🧠 Muat Model AI' lagi."
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(16.dp)
-    ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(text = "TOWR", color = electricBlue, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp)
-                Text(text = "by: Natanael", color = skyBlue.copy(alpha = 0.85f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            }
-
-            Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF022C22), border = BorderStroke(1.dp, Color(0xFF10B981))) {
-                Row(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Surface(shape = RoundedCornerShape(50), color = Color(0xFF10B981), modifier = Modifier.size(6.dp)) {}
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(text = "100% Aman & Offline", color = Color(0xFF34D399), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        HorizontalDivider(color = electricBlue.copy(alpha = 0.25f), thickness = 1.dp)
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Monitor Layar Konsol & Daftar Kartu File Interaktif
-        Surface(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            color = containerColor,
-            border = BorderStroke(1.dp, electricBlue.copy(alpha = 0.35f))
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(consoleScrollState)
-                    .padding(16.dp)
-            ) {
-                Text(
-                    text = terminalOutput,
-                    color = skyBlue,
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace,
-                    lineHeight = 20.sp
-                )
-
-                // Jika ada file ganda yang terdeteksi, munculkan kartu tombol interaktif
-                if (detectedDuplicates.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "📁 PILIH FILE UNTUK DILIHAT ATAU DIHAPUS:",
-                        color = Color.Yellow,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    detectedDuplicates.forEach { fileItem ->
-                        val icon = when (fileItem.extension) {
-                            "jpg", "jpeg", "png", "webp" -> "🖼️"
-                            "mp4", "mkv", "mov" -> "🎬"
-                            "pdf", "doc", "docx" -> "📄"
-                            else -> "📦"
-                        }
-
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF1E293B),
-                            border = BorderStroke(1.dp, Color(0xFF334155))
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                                    Text(text = "$icon ${fileItem.name}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                                    Text(text = "${fileItem.sizeKb} KB", color = Color.Gray, fontSize = 10.sp)
-                                }
-
-                                Row {
-                                    // Tombol BUKA (Langsung buka Galeri/Video/File)
-                                    Button(
-                                        onClick = { openFileWithSystemApp(context, fileItem.path) },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = electricBlue),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                        modifier = Modifier.height(34.dp)
-                                    ) {
-                                        Text("👁️ Buka", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-
-                                    Spacer(modifier = Modifier.width(6.dp))
-
-                                    // Tombol HAPUS (Hapus file spesifik ini)
-                                    Button(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                val success = fileTools.deleteSingleFile(fileItem.path)
-                                                if (success) {
-                                                    detectedDuplicates = detectedDuplicates.filter { it.path != fileItem.path }
-                                                    terminalOutput += "\n> TOWR: File '${fileItem.name}' berhasil dihapus secara permanen."
-                                                }
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(6.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                        modifier = Modifier.height(34.dp)
-                                    ) {
-                                        Text("🗑️", color = Color.White, fontSize = 11.sp)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Tombol Pintas Cepat
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ActionChip(title = "🧠 Muat Model AI", accent = Color(0xFF34D399), bg = containerColor) {
-                detectAndLoadModel()
-            }
-            ActionChip(title = "🔍 Cari File", accent = skyBlue, bg = containerColor) {
-                queryText = "Cari file "
-            }
-            ActionChip(title = "🚀 Buka Aplikasi", accent = skyBlue, bg = containerColor) {
-                queryText = "Buka "
-            }
-            ActionChip(title = "📊 Cek Aktivitas HP", accent = skyBlue, bg = containerColor) {
-                coroutineScope.launch {
-                    terminalOutput += "\n\n> USER: Cek aktivitas HP"
-                    terminalOutput += "\n> TOWR: [Sedang membaca statistik sistem 24 jam terakhir...]"
-                    val res = actionRouter.processInstruction("cek aktivitas")
-                    terminalOutput += "\n> TOWR:\n${res.message}"
-                }
-            }
-            ActionChip(title = "🧹 Cek File Ganda", accent = skyBlue, bg = containerColor) {
-                coroutineScope.launch {
-                    terminalOutput += "\n\n> USER: Periksa file ganda di Download"
-                    terminalOutput += "\n> TOWR: [Sedang memindai file ganda di folder Download...]"
-                    val list = fileTools.getDuplicateFilesList("Download")
-                    detectedDuplicates = list
-                    terminalOutput += "\n> TOWR: Ditemukan ${list.size} file ganda. Silakan tinjau dan buka filenya di bawah."
-                }
-            }
-            ActionChip(title = "🗑️ Bersihkan Layar", accent = Color(0xFFF87171), bg = containerColor) {
-                detectedDuplicates = emptyList()
-                terminalOutput = "STATUS: SISTEM ONLINE\nLayar konsol telah dibersihkan.\n\nTOWR siap menerima instruksi."
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Kolom Input Perintah & Tombol Kirim
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = queryText,
-                onValueChange = { queryText = it },
-                placeholder = { Text("Tanya atau beri perintah ke TOWR...", color = Color.Gray, fontSize = 13.sp) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedBorderColor = electricBlue,
-                    unfocusedBorderColor = borderDim,
-                    focusedContainerColor = containerColor,
-                    unfocusedContainerColor = containerColor
-                ),
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Button(
-                onClick = {
-                    if (queryText.isNotBlank()) {
-                        val userPrompt = queryText
-                        queryText = ""
-
-                        coroutineScope.launch {
-                            terminalOutput += "\n\n> USER: $userPrompt"
-
-                            val lowerPrompt = userPrompt.lowercase().trim()
-
-                            // 1. JIKA PERINTAH LANGSUNG -> Langsung eksekusi via ActionRouter (Tanpa tunggu AI)
-                            val isDirectCommand = lowerPrompt.startsWith("hapus") || 
-                                                  lowerPrompt.startsWith("buka") || 
-                                                  lowerPrompt.startsWith("cari") || 
-                                                  lowerPrompt.startsWith("temukan") ||
-                                                  lowerPrompt.contains("duplikat") || 
-                                                  lowerPrompt.contains("file ganda")
-
-                            if (isDirectCommand) {
-                                terminalOutput += "\n> TOWR: [Mengeksekusi alat native...]"
-                                val actionResult = actionRouter.processInstruction(userPrompt)
-                                var display = actionResult.message
-                                if (actionResult.files.isNotEmpty()) {
-                                    display += "\n" + actionResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
-                                }
-                                terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$display"
-                            } 
-                            // 2. JIKA PERTANYAAN UMUM / PERCAKAPAN -> Lempar ke Gemma AI
-                            else if (gemmaEngine.isModelLoaded) {
-                                terminalOutput += "\n> TOWR: [Sedang menganalisis instruksi...]"
-                                val aiReply = gemmaEngine.askGemma(userPrompt)
-                                
-                                // Bersihkan jika dibungkus ```json ... ```
-                                val cleanJson = aiReply
-                                    .replace("```json", "")
-                                    .replace("```", "")
-                                    .trim()
-
-                                if (cleanJson.contains("\"action\"") && cleanJson.contains("{") && cleanJson.contains("}")) {
-                                    terminalOutput += "\n> TOWR: [Mengeksekusi alat native...]"
-                                    val actionResult = actionRouter.processInstruction(cleanJson)
-                                    var display = actionResult.message
-                                    if (actionResult.files.isNotEmpty()) {
-                                        display += "\n" + actionResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
-                                    }
-                                    terminalOutput += "\n> TOWR (Hasil Eksekusi):\n$display"
-                                } else {
-                                    terminalOutput += "\n> TOWR: $aiReply"
-                                }
-                            } else {
-                                terminalOutput += "\n> TOWR: [Mengeksekusi...]"
-                                val directResult = actionRouter.processInstruction(userPrompt)
-                                var display = directResult.message
-                                if (directResult.files.isNotEmpty()) {
-                                    display += "\n" + directResult.files.joinToString("\n") { "• ${it.name} (${it.sizeKb} KB)" }
-                                }
-                                terminalOutput += "\n> TOWR:\n$display"
-                            }
-                        }
-                    }
-                },
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = electricBlue),
-                modifier = Modifier.height(56.dp)
-            ) {
-                Text(text = "KIRIM", color = Color.Black, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
-fun ActionChip(title: String, accent: Color, bg: Color, onTap: () -> Unit) {
-    Surface(
-        onClick = onTap,
-        shape = RoundedCornerShape(20.dp),
-        color = bg,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
-    ) {
-        Text(text = title, color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+        Toast.makeText(context, "Gagal membuka berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
     }
 }
