@@ -6,7 +6,9 @@ import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
@@ -16,10 +18,12 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -38,8 +42,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.offline.aiassistant.router.ActionRouter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 // =========================================================================
 // PALET WARNA TEMA NATIVE CYBER-DARK TOWR
@@ -121,67 +131,107 @@ fun TowrMainScreen() {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var inputPrompt by remember { mutableStateOf("") }
+    var selectedModelName by remember { mutableStateOf<String?>("Gemma 2B / E2B") }
 
-    val messages = remember {
-        mutableStateListOf(
-            TowrChatMessage(
-                sender = MessageSender.USER,
-                messageText = "Cari file laporan_keuangan.pdf, lalu buka aplikasi Kalkulator.",
-                timestamp = "12:45"
-            ),
-            TowrChatMessage(
-                sender = MessageSender.TOWR,
-                messageText = "File laporan keuangan berhasil ditemukan di penyimpanan lokal Anda. Aplikasi Kalkulator telah dibuka otomatis.",
-                timestamp = "12:45",
-                thinkingProcess = listOf(
-                    ToolExecutionLog(
-                        toolName = "FileScanner.searchLocal()",
-                        actionDetail = "Query: 'laporan_keuangan.pdf' | Path: /storage/emulated/0/Documents/",
-                        latencyMs = 14,
-                        isSuccess = true
-                    ),
-                    ToolExecutionLog(
-                        toolName = "AppLauncher.launchIntent()",
-                        actionDetail = "Package: com.android.calculator | Action: MAIN",
-                        latencyMs = 8,
-                        isSuccess = true
-                    )
-                ),
-                foundFiles = listOf(
-                    FileSearchResult(
-                        fileName = "Laporan_Keuangan_Q3_Final.pdf",
-                        filePath = "/storage/emulated/0/Documents/Laporan_Keuangan_Q3_Final.pdf",
-                        fileSizeFormatted = "2.4 MB",
-                        lastModifiedFormatted = "Kemarin, 16:30",
-                        extension = "PDF"
-                    )
+    // Inisialisasi ActionRouter
+    val actionRouter = remember { ActionRouter(context) }
+
+    // Launcher untuk memilih file model Gemma (.bin / .task / .gguf)
+    val modelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Model Gemma Terpilih"
+            selectedModelName = fileName
+            Toast.makeText(context, "Model Gemma dikaitkan: $fileName", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val messages = remember { mutableStateListOf<TowrChatMessage>() }
+
+    // Fungsi kirim instruksi ke ActionRouter
+    val sendInstruction: (String) -> Unit = { rawText ->
+        val trimmed = rawText.trim()
+        if (trimmed.isNotBlank()) {
+            val currentTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+
+            // 1. Tambahkan pesan user ke UI
+            messages.add(
+                TowrChatMessage(
+                    sender = MessageSender.USER,
+                    messageText = trimmed,
+                    timestamp = currentTime
                 )
             )
-        )
+
+            // 2. Jalankan eksekusi di background thread
+            coroutineScope.launch {
+                listState.animateScrollToItem(messages.size - 1)
+
+                val startTime = System.currentTimeMillis()
+                val response = withContext(Dispatchers.IO) {
+                    actionRouter.processInstruction(trimmed)
+                }
+                val latency = System.currentTimeMillis() - startTime
+
+                // Konversi data berkas ke UI Model
+                val resultFiles = response.files.map {
+                    FileSearchResult(
+                        fileName = it.name,
+                        filePath = it.path,
+                        fileSizeFormatted = it.size,
+                        lastModifiedFormatted = it.lastModified,
+                        extension = it.extension
+                    )
+                }
+
+                val log = listOf(
+                    ToolExecutionLog(
+                        toolName = "ActionRouter.processInstruction()",
+                        actionDetail = "Input: '$trimmed'",
+                        latencyMs = latency,
+                        isSuccess = true
+                    )
+                )
+
+                // 3. Masukkan respon TOWR ke chat
+                messages.add(
+                    TowrChatMessage(
+                        sender = MessageSender.TOWR,
+                        messageText = response.message,
+                        timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                        thinkingProcess = log,
+                        foundFiles = if (resultFiles.isNotEmpty()) resultFiles else null
+                    )
+                )
+
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
     }
 
     Scaffold(
         containerColor = TowrBgDark,
-        topBar = { TowrTopBar() },
+        topBar = {
+            TowrTopBar(
+                modelName = selectedModelName,
+                onSelectModelClicked = {
+                    modelPickerLauncher.launch(arrayOf("*/*"))
+                },
+                onClearChatClicked = {
+                    messages.clear()
+                    Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
+                }
+            )
+        },
         bottomBar = {
             TowrInputBar(
                 inputPrompt = inputPrompt,
                 onPromptChanged = { inputPrompt = it },
                 onSendClicked = {
-                    if (inputPrompt.isNotBlank()) {
-                        val txt = inputPrompt
-                        inputPrompt = ""
-                        messages.add(
-                            TowrChatMessage(
-                                sender = MessageSender.USER,
-                                messageText = txt,
-                                timestamp = "Sekarang"
-                            )
-                        )
-                        coroutineScope.launch {
-                            listState.animateScrollToItem(messages.size - 1)
-                        }
-                    }
+                    val txt = inputPrompt
+                    inputPrompt = ""
+                    sendInstruction(txt)
                 }
             )
         }
@@ -191,25 +241,54 @@ fun TowrMainScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            QuickActionChipsRow(onChipClicked = { inputPrompt = it })
+            QuickActionChipsRow(
+                onChipClicked = { chipAction ->
+                    when (chipAction) {
+                        "CLEAR_CHAT" -> {
+                            messages.clear()
+                            Toast.makeText(context, "Pesan telah dibersihkan.", Toast.LENGTH_SHORT).show()
+                        }
+                        else -> {
+                            sendInstruction(chipAction)
+                        }
+                    }
+                }
+            )
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(messages, key = { it.id }) { msg ->
-                    if (msg.sender == MessageSender.USER) {
-                        UserChatBubble(message = msg)
-                    } else {
-                        TowrAgentBubble(
-                            message = msg,
-                            onFileClick = { file ->
-                                openFileWithSystemApp(context, file.filePath)
-                            }
-                        )
+            if (messages.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "TOWR Agent AI siap menerima perintah.\nGunakan tombol cepat di atas atau ketik instruksi Anda.",
+                        color = TowrTextSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(messages, key = { it.id }) { msg ->
+                        if (msg.sender == MessageSender.USER) {
+                            UserChatBubble(message = msg)
+                        } else {
+                            TowrAgentBubble(
+                                message = msg,
+                                onFileClick = { file ->
+                                    openFileWithSystemApp(context, file.filePath)
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -221,12 +300,16 @@ fun TowrMainScreen() {
 // HEADER & QUICK ACTION CHIPS
 // =========================================================================
 @Composable
-fun TowrTopBar() {
+fun TowrTopBar(
+    modelName: String?,
+    onSelectModelClicked: () -> Unit,
+    onClearChatClicked: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(TowrBgDark)
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -246,22 +329,45 @@ fun TowrTopBar() {
                 }
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
-                    Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                    Text("Gemma 3 INT4 • On-Device", color = TowrSkyBlue, fontSize = 12.sp)
+                    Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    // Tombol untuk mengaitkan model Gemma
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { onSelectModelClicked() }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = modelName ?: "Kaitkan Model Gemma",
+                            color = TowrSkyBlue,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(Icons.Default.Edit, contentDescription = "Ganti Model", tint = TowrSkyBlue, modifier = Modifier.size(11.dp))
+                    }
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(TowrGreenBg)
-                    .border(1.dp, TowrEmeraldGreen, RoundedCornerShape(8.dp))
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(modifier = Modifier.size(7.dp).clip(CircleShape).background(TowrEmeraldGreen))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("100% OFFLINE", color = TowrEmeraldGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onClearChatClicked, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(19.dp))
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TowrGreenBg)
+                        .border(1.dp, TowrEmeraldGreen, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(TowrEmeraldGreen))
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text("100% OFFLINE", color = TowrEmeraldGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -271,23 +377,39 @@ fun TowrTopBar() {
 
 @Composable
 fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
-    val chips = listOf("🔍 Cari File Lokal", "🚀 Luncurkan Aplikasi", "📊 Status NPU & RAM")
+    val scrollState = rememberScrollState()
+    val chips = listOf(
+        Pair("🔍 Cari File", "cari file"),
+        Pair("📑 File Duplikat", "cek file duplikat"),
+        Pair("🧹 Bersihkan Duplikat", "hapus file ganda"),
+        Pair("🚀 Luncurkan WA", "buka whatsapp"),
+        Pair("📊 Status Aktivitas", "cek aktivitas"),
+        Pair("🗑️ Bersihkan Pesan", "CLEAR_CHAT")
+    )
+
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState)
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        chips.forEach { chip ->
+        chips.forEach { (label, action) ->
             Box(
                 modifier = Modifier
-                    .weight(1f)
                     .clip(RoundedCornerShape(16.dp))
                     .background(TowrSurfaceDark)
                     .border(1.dp, TowrSkyBlue.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
-                    .clickable { onChipClicked(chip.substring(3)) }
-                    .padding(vertical = 8.dp),
+                    .clickable { onChipClicked(action) }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(chip, color = TowrSkyBlue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = label,
+                    color = TowrSkyBlue,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
     }
@@ -495,7 +617,7 @@ fun TowrInputBar(inputPrompt: String, onPromptChanged: (String) -> Unit, onSendC
 }
 
 // =========================================================================
-// UTILITAS BUKA BERKAS (DISINKRONKAN DENGAN MANIFEST ANDA)
+// UTILITAS BUKA BERKAS
 // =========================================================================
 fun openFileWithSystemApp(context: Context, filePath: String) {
     try {
@@ -505,7 +627,6 @@ fun openFileWithSystemApp(context: Context, filePath: String) {
             return
         }
 
-        // Tepat memanggil authority dari manifest Anda
         val uri: Uri = FileProvider.getUriForFile(
             context,
             "com.offline.aiassistant.provider",
