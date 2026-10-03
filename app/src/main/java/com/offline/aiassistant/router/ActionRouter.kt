@@ -75,7 +75,7 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            // HAPUS BERKAS / BERSIHKAN
+            // HAPUS BERKAS / BERSIHKAN DUPLIKAT
             lower.startsWith("hapus file") || lower.startsWith("hapus") || lower.startsWith("bersihkan") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("double")) {
                     val msg = fileTools.cleanDuplicateFiles(deleteDuplicates = true)
@@ -118,6 +118,17 @@ class ActionRouter(context: Context) {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
+            // SHARE VIA WHATSAPP / TELEGRAM / NOTION
+            lower.contains("telegram") || lower.contains("tele") -> {
+                val messageText = trimmed.replace(Regex("(?i)^(kirim ke telegram|kirim pesan ke telegram|bagikan ke telegram|telegram)\\s*[:,-]?\\s*"), "")
+                RouterResponse(shareBridgeTool.shareTextToApp(messageText, "telegram"))
+            }
+
+            lower.contains("notion") -> {
+                val noteContent = trimmed.replace(Regex("(?i)^(simpan ke notion|catatan notion|notion)\\s*[:,-]?\\s*"), "")
+                RouterResponse(shareBridgeTool.saveNoteForNotion("Catatan_TOWR", noteContent))
+            }
+
             // GABUNG GAMBAR KE PDF
             lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
                 val imageList = extractImageNames(trimmed)
@@ -126,7 +137,7 @@ class ActionRouter(context: Context) {
                 RouterResponse(msg)
             }
 
-            // PENCARIAN BERKAS (Lengkap dengan Filter Waktu, Ekstensi, Ukuran)
+            // PENCARIAN BERKAS (Mendukung Waktu, Ekstensi, Ukuran, Folder)
             lower.startsWith("cari") || lower.startsWith("temukan") || lower.startsWith("lihat file") -> {
                 var minMb: Double? = null
                 var maxMb: Double? = null
@@ -134,7 +145,7 @@ class ActionRouter(context: Context) {
                 var maxAgeHours: Long? = null
                 val extensions = mutableListOf<String>()
 
-                // Filter Waktu Alami
+                // 1. Ekstraksi Waktu Alami
                 when {
                     lower.contains("24 jam") || lower.contains("sehari") || lower.contains("1 hari") -> maxAgeHours = 24L
                     lower.contains("48 jam") || lower.contains("2 hari") -> maxAgeHours = 48L
@@ -142,13 +153,21 @@ class ActionRouter(context: Context) {
                     lower.contains("hari ini") -> maxAgeHours = 12L
                 }
 
-                // Filter Ekstensi Alami
+                // 2. Ekstraksi Target Folder
+                val targetFolder = when {
+                    lower.contains("download") || lower.contains("didownload") || lower.contains("unduh") || lower.contains("diunduh") -> "Download"
+                    lower.contains("dokumen") || lower.contains("document") -> "Documents"
+                    lower.contains("foto") || lower.contains("gambar") || lower.contains("kamera") -> "DCIM"
+                    else -> null
+                }
+
+                // 3. Ekstraksi Ekstensi
                 if (lower.contains("pdf")) extensions.add("pdf")
                 if (lower.contains("word") || lower.contains("docx") || lower.contains("doc")) { extensions.add("docx"); extensions.add("doc") }
                 if (lower.contains("excel") || lower.contains("xlsx") || lower.contains("xls")) { extensions.add("xlsx"); extensions.add("xls") }
-                if (lower.contains("gambar") || lower.contains("foto") || lower.contains("image")) { extensions.addAll(listOf("jpg", "jpeg", "png", "webp")) }
+                if (lower.contains("foto") || lower.contains("gambar") || lower.contains("image")) { extensions.addAll(listOf("jpg", "jpeg", "png", "webp")) }
 
-                // Filter Ukuran
+                // 4. Ekstraksi Ukuran & Sorting
                 val sizeMatch = Regex("(lebih dari|>|di atas)\\s*(\\d+)\\s*(mb|megabyte)", RegexOption.IGNORE_CASE).find(lower)
                 if (sizeMatch != null) minMb = sizeMatch.groupValues[2].toDoubleOrNull()
 
@@ -159,11 +178,10 @@ class ActionRouter(context: Context) {
                 if (lower.contains("paling baru") || lower.contains("terbaru")) sortBy = "newest"
                 if (lower.contains("paling besar") || lower.contains("terbesar")) sortBy = "largest"
 
-                // Bersihkan kata perintah agar hanya tersisa nama inti berkas
+                // 5. Bersihkan Kata Perintah dan Stopwords (Termasuk "didownload")
                 val cleanQuery = trimmed
-                    .replace(Regex("(?i)^(cari file|cari|temukan|lihat file)\\s*"), "")
-                    .replace(Regex("(?i)(dari|dalam|pada|selama|yang|berukuran|lebih dari|kurang dari|di atas|di bawah|\\d+\\s*(mb|megabyte)|\\d+\\s*jam|terakhir|terakhie|hari ini|minggu ini|sehari|paling lama|paling baru|paling besar|terlama|terbaru|terbesar|pdf|word|excel|docx|xlsx|foto|gambar)"), "")
-                    .replace(Regex("(?i)(lokal|berkas|file)"), "")
+                    .replace(Regex("(?i)\\b(cari|file|berkas|dokumen|temukan|lihat|yang|di|ke|dari|pada|dalam|selama|sejak|didownload|download|diunduh|unduh|tersimpan|dibuat|ada|semua|terakhir|terakhie|terbaru|paling\\s+baru|paling\\s+lama|terlama|terbesar|paling\\s+besar|hari\\s+ini|minggu\\s+ini|sehari|\\d+\\s*(mb|megabyte|gb|kb)|\\d+\\s*jam|pdf|word|excel|docx|xlsx|foto|gambar|lokal)\\b"), "")
+                    .replace("\\s+".toRegex(), " ")
                     .trim()
 
                 val foundFiles = fileTools.searchFilesAdvanced(
@@ -172,11 +190,27 @@ class ActionRouter(context: Context) {
                     maxSizeMb = maxMb,
                     sortBy = sortBy,
                     maxAgeHours = maxAgeHours,
-                    extensions = extensions
+                    extensions = extensions,
+                    specificFolder = targetFolder
                 )
 
                 if (foundFiles.isEmpty()) {
-                    RouterResponse("Tidak ditemukan berkas yang memenuhi kriteria pencarian.")
+                    if (maxAgeHours != null) {
+                        // Fallback: Jika tidak ada file baru di jendela waktu tersebut, tampilkan berkas terbaru yang ada
+                        val recentFiles = fileTools.searchFilesAdvanced(
+                            query = cleanQuery,
+                            sortBy = "newest",
+                            extensions = extensions,
+                            specificFolder = targetFolder
+                        )
+                        if (recentFiles.isNotEmpty()) {
+                            RouterResponse("Tidak ada berkas dalam $maxAgeHours jam terakhir. Berikut berkas terbaru di perangkat Anda:", recentFiles.take(8))
+                        } else {
+                            RouterResponse("Tidak ditemukan berkas yang memenuhi kriteria pencarian.")
+                        }
+                    } else {
+                        RouterResponse("Tidak ditemukan berkas yang memenuhi kriteria pencarian.")
+                    }
                 } else {
                     val kriteriaText = when {
                         maxAgeHours != null -> " (dalam $maxAgeHours jam terakhir)"
