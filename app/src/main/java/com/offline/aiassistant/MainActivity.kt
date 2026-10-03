@@ -54,9 +54,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-// =========================================================================
-// PALET WARNA TEMA NATIVE CYBER-DARK TOWR
-// =========================================================================
 val TowrBgDark = Color(0xFF070B14)
 val TowrSurfaceDark = Color(0xFF0F172A)
 val TowrSurfaceElevated = Color(0xFF1E293B)
@@ -68,9 +65,6 @@ val TowrGreenBg = Color(0xFF022C22)
 val TowrTextPrimary = Color(0xFFF8FAFC)
 val TowrTextSecondary = Color(0xFF94A3B8)
 
-// =========================================================================
-// MODEL DATA OBROLAN & EKSEKUSI TOOL
-// =========================================================================
 enum class MessageSender { USER, TOWR, SYSTEM }
 
 data class FileSearchResult(
@@ -98,9 +92,6 @@ data class TowrChatMessage(
     val isLoading: Boolean = false
 )
 
-// =========================================================================
-// ACTIVITY UTAMA
-// =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -125,9 +116,6 @@ fun TowrTheme(content: @Composable () -> Unit) {
     )
 }
 
-// =========================================================================
-// LAYAR UTAMA (HYBRID: GEMMA 2B ON-DEVICE + ACTION ROUTER FALLBACK)
-// =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TowrMainScreen() {
@@ -142,19 +130,18 @@ fun TowrMainScreen() {
     var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
     var isGemmaReady by remember { mutableStateOf(false) }
 
-    // Otomatis mencari dan memuat file model gemma saat aplikasi dibuka
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val detectedPath = gemmaEngine.findModelPath()
             if (detectedPath != null) {
                 modelStatusLabel = "Memuat ke GPU..."
-                val loadMsg = gemmaEngine.loadModel(detectedPath)
+                gemmaEngine.loadModel(detectedPath)
                 if (gemmaEngine.isModelLoaded) {
                     isGemmaReady = true
                     val fileName = File(detectedPath).name
                     modelStatusLabel = "Gemma Aktif: $fileName"
                 } else {
-                    modelStatusLabel = "Mode Native (Gemma: Gagal GPU)"
+                    modelStatusLabel = "Mode Native (Gemma: Fallback)"
                 }
             } else {
                 modelStatusLabel = "Kaitkan Model Gemma"
@@ -162,7 +149,6 @@ fun TowrMainScreen() {
         }
     }
 
-    // Pemilih file model manual jika ingin mengubah lokasi file model
     val modelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -180,7 +166,6 @@ fun TowrMainScreen() {
 
     val messages = remember { mutableStateListOf<TowrChatMessage>() }
 
-    // Eksekusi instruksi: Lewat Gemma jika siap, atau lewat ActionRouter langsung
     val sendInstruction: (String) -> Unit = { rawText ->
         val trimmed = rawText.trim()
         if (trimmed.isNotBlank()) {
@@ -211,18 +196,29 @@ fun TowrMainScreen() {
                 val startTime = System.currentTimeMillis()
                 val (finalMessage, files, toolName) = withContext(Dispatchers.IO) {
                     if (gemmaEngine.isModelLoaded) {
-                        // 1. Tanyakan ke Gemma on-device
                         val aiResponse = gemmaEngine.askGemma(trimmed)
-                        // Jika Gemma menghasilkan JSON aksi, jalankan lewat ActionRouter
+                        val lowerTrimmed = trimmed.lowercase()
+
                         if (aiResponse.contains("\"action\"")) {
+                            // 1. Gemma menghasilkan JSON aksi
                             val routerRes = actionRouter.processInstruction(aiResponse)
                             Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
+                        } else if (lowerTrimmed.startsWith("cari") || 
+                                   lowerTrimmed.startsWith("buka") || 
+                                   lowerTrimmed.startsWith("luncurkan") || 
+                                   lowerTrimmed.startsWith("hapus") || 
+                                   lowerTrimmed.startsWith("bersihkan") || 
+                                   lowerTrimmed.startsWith("kirim") ||
+                                   lowerTrimmed.contains("wa") ||
+                                   lowerTrimmed.contains("whatsapp")) {
+                            // 2. HYBRID GUARD: Jika Gemma membalas teks basa-basi padahal ini instruksi perangkat, langsung eksekusi secara native!
+                            val routerRes = actionRouter.processInstruction(trimmed)
+                            Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
                         } else {
-                            // Jawaban teks umum dari Gemma
+                            // 3. Obrolan umum bebas dari Gemma
                             Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
                         }
                     } else {
-                        // 2. Fallback Rule-Engine jika Gemma belum selesai dimuat
                         val routerRes = actionRouter.processInstruction(trimmed)
                         Triple(routerRes.message, routerRes.files, "ActionRouter Native Engine")
                     }
@@ -357,9 +353,6 @@ fun TowrMainScreen() {
     }
 }
 
-// =========================================================================
-// HEADER & QUICK ACTION CHIPS
-// =========================================================================
 @Composable
 fun TowrTopBar(
     modelStatus: String,
@@ -477,9 +470,6 @@ fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
     }
 }
 
-// =========================================================================
-// BUBBLE PESAN USER
-// =========================================================================
 @Composable
 fun UserChatBubble(message: TowrChatMessage) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -500,9 +490,6 @@ fun UserChatBubble(message: TowrChatMessage) {
     }
 }
 
-// =========================================================================
-// BUBBLE PESAN TOWR (STATUS LOADING + LIPATAN PROSES + HASIL BERKAS)
-// =========================================================================
 @Composable
 fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
@@ -695,9 +682,6 @@ fun TowrInputBar(inputPrompt: String, onPromptChanged: (String) -> Unit, onSendC
     }
 }
 
-// =========================================================================
-// UTILITAS BUKA BERKAS
-// =========================================================================
 fun openFileWithSystemApp(context: Context, filePath: String) {
     try {
         val file = File(filePath)
