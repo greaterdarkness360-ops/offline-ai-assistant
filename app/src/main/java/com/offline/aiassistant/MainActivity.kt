@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,6 +51,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 // =========================================================================
 // PALET WARNA TEMA NATIVE CYBER-DARK TOWR
@@ -86,12 +88,13 @@ data class ToolExecutionLog(
 )
 
 data class TowrChatMessage(
-    val id: String = java.util.UUID.randomUUID().toString(),
+    val id: String = UUID.randomUUID().toString(),
     val sender: MessageSender,
     val messageText: String,
     val timestamp: String,
     val thinkingProcess: List<ToolExecutionLog>? = null,
-    val foundFiles: List<FileSearchResult>? = null
+    val foundFiles: List<FileSearchResult>? = null,
+    val isLoading: Boolean = false
 )
 
 // =========================================================================
@@ -131,12 +134,10 @@ fun TowrMainScreen() {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var inputPrompt by remember { mutableStateOf("") }
-    var selectedModelName by remember { mutableStateOf<String?>("Gemma 2B / E2B") }
+    var selectedModelName by remember { mutableStateOf<String?>("gemma-4-E2B-it-gpu.litertlm") }
 
-    // Inisialisasi ActionRouter
     val actionRouter = remember { ActionRouter(context) }
 
-    // Launcher untuk memilih file model Gemma (.bin / .task / .gguf)
     val modelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -149,13 +150,12 @@ fun TowrMainScreen() {
 
     val messages = remember { mutableStateListOf<TowrChatMessage>() }
 
-    // Fungsi kirim instruksi ke ActionRouter
     val sendInstruction: (String) -> Unit = { rawText ->
         val trimmed = rawText.trim()
         if (trimmed.isNotBlank()) {
             val currentTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
 
-            // 1. Tambahkan pesan user ke UI
+            // 1. Tampilkan pesan user
             messages.add(
                 TowrChatMessage(
                     sender = MessageSender.USER,
@@ -164,7 +164,19 @@ fun TowrMainScreen() {
                 )
             )
 
-            // 2. Jalankan eksekusi di background thread
+            // 2. Tampilkan instan respon "Perintah diterima"
+            val loadingMessageId = UUID.randomUUID().toString()
+            messages.add(
+                TowrChatMessage(
+                    id = loadingMessageId,
+                    sender = MessageSender.TOWR,
+                    messageText = "Perintah diterima. Sedang memproses, mohon tunggu sebentar...",
+                    timestamp = currentTime,
+                    isLoading = true
+                )
+            )
+
+            // 3. Jalankan pemrosesan di background thread
             coroutineScope.launch {
                 listState.animateScrollToItem(messages.size - 1)
 
@@ -174,7 +186,6 @@ fun TowrMainScreen() {
                 }
                 val latency = System.currentTimeMillis() - startTime
 
-                // Konversi data berkas ke UI Model
                 val resultFiles = response.files.map {
                     FileSearchResult(
                         fileName = it.name,
@@ -194,16 +205,19 @@ fun TowrMainScreen() {
                     )
                 )
 
-                // 3. Masukkan respon TOWR ke chat
-                messages.add(
-                    TowrChatMessage(
+                // 4. Perbarui status loading menjadi hasil akhir
+                val targetIndex = messages.indexOfFirst { it.id == loadingMessageId }
+                if (targetIndex != -1) {
+                    messages[targetIndex] = TowrChatMessage(
+                        id = loadingMessageId,
                         sender = MessageSender.TOWR,
                         messageText = response.message,
                         timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                         thinkingProcess = log,
-                        foundFiles = if (resultFiles.isNotEmpty()) resultFiles else null
+                        foundFiles = if (resultFiles.isNotEmpty()) resultFiles else null,
+                        isLoading = false
                     )
-                )
+                }
 
                 listState.animateScrollToItem(messages.size - 1)
             }
@@ -215,9 +229,7 @@ fun TowrMainScreen() {
         topBar = {
             TowrTopBar(
                 modelName = selectedModelName,
-                onSelectModelClicked = {
-                    modelPickerLauncher.launch(arrayOf("*/*"))
-                },
+                onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
                 onClearChatClicked = {
                     messages.clear()
                     Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
@@ -244,6 +256,12 @@ fun TowrMainScreen() {
             QuickActionChipsRow(
                 onChipClicked = { chipAction ->
                     when (chipAction) {
+                        "INPUT_CARI" -> {
+                            inputPrompt = "cari file "
+                        }
+                        "INPUT_BUKA" -> {
+                            inputPrompt = "buka aplikasi "
+                        }
                         "CLEAR_CHAT" -> {
                             messages.clear()
                             Toast.makeText(context, "Pesan telah dibersihkan.", Toast.LENGTH_SHORT).show()
@@ -330,7 +348,6 @@ fun TowrTopBar(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    // Tombol untuk mengaitkan model Gemma
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
@@ -379,10 +396,11 @@ fun TowrTopBar(
 fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
     val scrollState = rememberScrollState()
     val chips = listOf(
-        Pair("🔍 Cari File", "cari file"),
+        Pair("🔍 Cari File...", "INPUT_CARI"),
+        Pair("🕒 24 Jam Terakhir", "cari file 24 jam terakhir"),
         Pair("📑 File Duplikat", "cek file duplikat"),
         Pair("🧹 Bersihkan Duplikat", "hapus file ganda"),
-        Pair("🚀 Luncurkan WA", "buka whatsapp"),
+        Pair("🚀 Buka Aplikasi...", "INPUT_BUKA"),
         Pair("📊 Status Aktivitas", "cek aktivitas"),
         Pair("🗑️ Bersihkan Pesan", "CLEAR_CHAT")
     )
@@ -439,7 +457,7 @@ fun UserChatBubble(message: TowrChatMessage) {
 }
 
 // =========================================================================
-// BUBBLE PESAN TOWR (LIPATAN PROSES BERPIKIR + HASIL BERKAS)
+// BUBBLE PESAN TOWR (STATUS LOADING + LIPATAN PROSES + HASIL BERKAS)
 // =========================================================================
 @Composable
 fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) -> Unit) {
@@ -459,22 +477,39 @@ fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) ->
                 }
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // 1. Kartu Lipatan Proses Berpikir
-                if (!message.thinkingProcess.isNullOrEmpty()) {
-                    CollapsibleThinkingCard(thinkingLogs = message.thinkingProcess)
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-
-                // 2. Kartu Hasil Berkas Sekali Ketuk
-                if (!message.foundFiles.isNullOrEmpty()) {
-                    message.foundFiles.forEach { fileItem ->
-                        SingleTapFileCard(file = fileItem, onFileClick = { onFileClick(fileItem) })
-                        Spacer(modifier = Modifier.height(10.dp))
+                if (message.isLoading) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = TowrElectricCyan,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = message.messageText,
+                            color = TowrSkyBlue,
+                            fontSize = 13.sp,
+                            fontStyle = FontStyle.Italic
+                        )
                     }
-                }
+                } else {
+                    if (!message.thinkingProcess.isNullOrEmpty()) {
+                        CollapsibleThinkingCard(thinkingLogs = message.thinkingProcess)
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
 
-                // 3. Teks Balasan TOWR
-                Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 21.sp)
+                    if (!message.foundFiles.isNullOrEmpty()) {
+                        message.foundFiles.forEach { fileItem ->
+                            SingleTapFileCard(file = fileItem, onFileClick = { onFileClick(fileItem) })
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+                    }
+
+                    Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 21.sp)
+                }
             }
         }
     }
