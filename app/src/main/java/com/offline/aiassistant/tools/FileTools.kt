@@ -14,6 +14,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+// =========================================================================
+// MODEL DATA BERKAS
+// =========================================================================
 data class FileItemInfo(
     val name: String,
     val path: String,
@@ -31,6 +34,9 @@ data class FileItemInfo(
 
 typealias FileSearchResult = FileItemInfo
 
+// =========================================================================
+// KELAS FILE TOOLS
+// =========================================================================
 class FileTools(private val context: Context) {
 
     companion object {
@@ -40,7 +46,6 @@ class FileTools(private val context: Context) {
     private val storageRoot: File?
         get() = Environment.getExternalStorageDirectory()
 
-    // Memindai folder utama dan subfolder penting tanpa menyentuh cache/sistem
     private fun getSearchableDirectories(specificFolder: String? = null): List<File> {
         val root = storageRoot ?: return emptyList()
 
@@ -49,29 +54,34 @@ class FileTools(private val context: Context) {
             if (target.exists() && target.canRead()) return listOf(target)
         }
 
-        // Folder prioritas utama
-        val defaultDirs = listOf(
-            File(root, "Download"),
-            File(root, "Documents"),
-            File(root, "DCIM"),
-            File(root, "Pictures"),
-            File(root, "Movies"),
-            File(root, "Music"),
-            File(root, "Android/media/com.whatsapp/WhatsApp/Media"),
-            File(root, "WhatsApp/Media"),
-            File(root, "Telegram")
-        ).filter { it.exists() && it.canRead() }
+        val targetDirs = mutableListOf<File>()
+        val standardFolders = listOf("Download", "Documents", "DCIM", "Pictures", "Movies", "Music")
 
-        // Tambahkan root folder level-1 (folder buatan pengguna)
-        val otherUserDirs = root.listFiles { file ->
-            file.isDirectory && !file.name.startsWith(".") && file.name != "Android"
-        }?.toList() ?: emptyList()
+        for (name in standardFolders) {
+            val f = File(root, name)
+            if (f.exists() && f.canRead()) targetDirs.add(f)
+        }
 
-        return (defaultDirs + otherUserDirs + listOf(root)).distinctBy { it.absolutePath }
+        // WhatsApp & Telegram
+        val waMedia = File(root, "Android/media/com.whatsapp/WhatsApp/Media")
+        if (waMedia.exists() && waMedia.canRead()) targetDirs.add(waMedia)
+        val waOld = File(root, "WhatsApp/Media")
+        if (waOld.exists() && waOld.canRead()) targetDirs.add(waOld)
+        val tele = File(root, "Telegram")
+        if (tele.exists() && tele.canRead()) targetDirs.add(tele)
+
+        // Folder tingkat pertama buatan pengguna di memori utama
+        val customDirs = root.listFiles { file ->
+            file.isDirectory && !file.name.startsWith(".") && !file.name.equals("Android", ignoreCase = true) &&
+            !standardFolders.any { it.equals(file.name, ignoreCase = true) }
+        } ?: emptyArray()
+
+        targetDirs.addAll(customDirs)
+        return targetDirs
     }
 
     /**
-     * Pencarian Lanjutan: Mendukung query nama fleksibel, ukuran, rentang jam, dan ekstensi
+     * Pencarian Berkas Lanjutan
      */
     fun searchFilesAdvanced(
         query: String = "",
@@ -79,7 +89,8 @@ class FileTools(private val context: Context) {
         maxSizeMb: Double? = null,
         sortBy: String? = null,
         maxAgeHours: Long? = null,
-        extensions: List<String> = emptyList()
+        extensions: List<String> = emptyList(),
+        specificFolder: String? = null
     ): List<FileItemInfo> {
         activeSearchResults.clear()
         val results = mutableListOf<FileItemInfo>()
@@ -91,24 +102,20 @@ class FileTools(private val context: Context) {
         val maxBytes = maxSizeMb?.let { (it * 1024 * 1024).toLong() }
         val normalizedExts = extensions.map { it.lowercase().trim().removePrefix(".") }
 
-        val visitedDirs = mutableSetOf<String>()
-
-        for (dir in getSearchableDirectories()) {
-            if (visitedDirs.add(dir.absolutePath)) {
-                scanDirFast(
-                    dir = dir,
-                    query = query.trim(),
-                    minBytes = minBytes,
-                    maxBytes = maxBytes,
-                    currentTime = currentTime,
-                    maxAgeMs = maxAgeMs,
-                    extensions = normalizedExts,
-                    output = results
-                )
-            }
+        for (dir in getSearchableDirectories(specificFolder)) {
+            scanDirFast(
+                dir = dir,
+                query = query.trim(),
+                minBytes = minBytes,
+                maxBytes = maxBytes,
+                currentTime = currentTime,
+                maxAgeMs = maxAgeMs,
+                extensions = normalizedExts,
+                output = results,
+                depth = 0
+            )
         }
 
-        // Urutkan hasil
         val sorted = when (sortBy?.lowercase()) {
             "oldest" -> results.sortedBy { it.lastModifiedTimestamp }
             "newest" -> results.sortedByDescending { it.lastModifiedTimestamp }
@@ -116,7 +123,7 @@ class FileTools(private val context: Context) {
             else -> results.sortedByDescending { it.lastModifiedTimestamp }
         }
 
-        return sorted.take(60) // Batasi 60 berkas teratas agar UI tetap sangat ringan
+        return sorted.take(50)
     }
 
     private fun scanDirFast(
@@ -130,11 +137,10 @@ class FileTools(private val context: Context) {
         output: MutableList<FileItemInfo>,
         depth: Int = 0
     ) {
-        if (depth > 4) return
+        if (depth > 3) return
         val files = dir.listFiles() ?: return
 
         for (file in files) {
-            // Lewati folder sampah, thumbnail, cache
             val nameLower = file.name.lowercase()
             if (file.isDirectory) {
                 if (!file.name.startsWith(".") && 
@@ -176,7 +182,7 @@ class FileTools(private val context: Context) {
     }
 
     /**
-     * Cek berkas duplikat di seluruh penyimpanan atau folder tertentu
+     * Cek Berkas Duplikat
      */
     fun getDuplicateFilesList(folderName: String? = null): List<FileItemInfo> {
         val dirs = getSearchableDirectories(folderName)
@@ -184,7 +190,7 @@ class FileTools(private val context: Context) {
 
         for (dir in dirs) {
             dir.walkTopDown().maxDepth(3).filter { 
-                it.isFile && !it.name.startsWith(".") && it.length() > 1024 // lewati file kosong 0kb
+                it.isFile && !it.name.startsWith(".") && it.length() > 1024 
             }.forEach { allFiles.add(it) }
         }
 
@@ -234,7 +240,7 @@ class FileTools(private val context: Context) {
 
         var deletedCount = 0
         for (dir in getSearchableDirectories()) {
-            val matched = dir.walkTopDown().maxDepth(4)
+            val matched = dir.walkTopDown().maxDepth(3)
                 .filter { it.isFile && isFlexibleMatch(it.name, targetName) }
                 .toList()
 
@@ -302,6 +308,48 @@ class FileTools(private val context: Context) {
         activeSearchResults.clear()
         activeSearchResults.add(keptFile)
         return "Berhasil menghapus $deletedCount berkas. Berkas nomor $keepIndex ('${keptFile.name}') tetap aman."
+    }
+
+    fun shareFileToWhatsApp(filePath: String): Boolean {
+        return try {
+            val file = File(filePath)
+            if (!file.exists()) {
+                Toast.makeText(context, "Berkas tidak ditemukan: $filePath", Toast.LENGTH_SHORT).show()
+                return false
+            }
+
+            val uri: Uri = FileProvider.getUriForFile(
+                context,
+                "com.offline.aiassistant.provider",
+                file
+            )
+
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = when (file.extension.lowercase()) {
+                    "pdf" -> "application/pdf"
+                    "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    "jpg", "jpeg", "png" -> "image/*"
+                    else -> "*/*"
+                }
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                setPackage("com.whatsapp")
+            }
+
+            try {
+                shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(shareIntent)
+                true
+            } catch (e: Exception) {
+                val chooser = Intent.createChooser(shareIntent.apply { setPackage(null) }, "Bagikan berkas via...")
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(chooser)
+                true
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Gagal membagikan berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            false
+        }
     }
 
     private fun formatFileSize(bytes: Long): String {
