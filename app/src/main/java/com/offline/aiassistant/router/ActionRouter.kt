@@ -28,7 +28,9 @@ data class AgentAction(
     val text: String? = null,
     val file_path: String? = null,
     val title: String? = null,
-    val content: String? = null
+    val content: String? = null,
+    val hours: Long? = null,
+    val contact_name: String? = null
 )
 
 data class RouterResponse(
@@ -118,7 +120,15 @@ class ActionRouter(context: Context) {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
-            // SHARE VIA WHATSAPP / TELEGRAM / NOTION
+            // KIRIM PESAN KE WHATSAPP / TELEGRAM / NOTION
+            lower.contains("wa") || lower.contains("whatsapp") -> {
+                val messageText = trimmed
+                    .replace(Regex("(?i)^(kirim pesan|kirim|chat|bagikan|pesan)\\s*"), "")
+                    .replace(Regex("(?i)(ke|di|lewat|via)\\s*(wa|whatsapp)\\s*"), "")
+                    .trim()
+                RouterResponse(shareBridgeTool.shareTextToApp(messageText, "whatsapp"))
+            }
+
             lower.contains("telegram") || lower.contains("tele") -> {
                 val messageText = trimmed.replace(Regex("(?i)^(kirim ke telegram|kirim pesan ke telegram|bagikan ke telegram|telegram)\\s*[:,-]?\\s*"), "")
                 RouterResponse(shareBridgeTool.shareTextToApp(messageText, "telegram"))
@@ -145,7 +155,6 @@ class ActionRouter(context: Context) {
                 var maxAgeHours: Long? = null
                 val extensions = mutableListOf<String>()
 
-                // 1. Ekstraksi Waktu Alami
                 when {
                     lower.contains("24 jam") || lower.contains("sehari") || lower.contains("1 hari") -> maxAgeHours = 24L
                     lower.contains("48 jam") || lower.contains("2 hari") -> maxAgeHours = 48L
@@ -153,7 +162,6 @@ class ActionRouter(context: Context) {
                     lower.contains("hari ini") -> maxAgeHours = 12L
                 }
 
-                // 2. Ekstraksi Target Folder
                 val targetFolder = when {
                     lower.contains("download") || lower.contains("didownload") || lower.contains("unduh") || lower.contains("diunduh") -> "Download"
                     lower.contains("dokumen") || lower.contains("document") -> "Documents"
@@ -161,13 +169,11 @@ class ActionRouter(context: Context) {
                     else -> null
                 }
 
-                // 3. Ekstraksi Ekstensi
                 if (lower.contains("pdf")) extensions.add("pdf")
                 if (lower.contains("word") || lower.contains("docx") || lower.contains("doc")) { extensions.add("docx"); extensions.add("doc") }
                 if (lower.contains("excel") || lower.contains("xlsx") || lower.contains("xls")) { extensions.add("xlsx"); extensions.add("xls") }
                 if (lower.contains("foto") || lower.contains("gambar") || lower.contains("image")) { extensions.addAll(listOf("jpg", "jpeg", "png", "webp")) }
 
-                // 4. Ekstraksi Ukuran & Sorting
                 val sizeMatch = Regex("(lebih dari|>|di atas)\\s*(\\d+)\\s*(mb|megabyte)", RegexOption.IGNORE_CASE).find(lower)
                 if (sizeMatch != null) minMb = sizeMatch.groupValues[2].toDoubleOrNull()
 
@@ -178,9 +184,8 @@ class ActionRouter(context: Context) {
                 if (lower.contains("paling baru") || lower.contains("terbaru")) sortBy = "newest"
                 if (lower.contains("paling besar") || lower.contains("terbesar")) sortBy = "largest"
 
-                // 5. Bersihkan Kata Perintah dan Stopwords (Termasuk "didownload")
                 val cleanQuery = trimmed
-                    .replace(Regex("(?i)\\b(cari|file|berkas|dokumen|temukan|lihat|yang|di|ke|dari|pada|dalam|selama|sejak|didownload|download|diunduh|unduh|tersimpan|dibuat|ada|semua|terakhir|terakhie|terbaru|paling\\s+baru|paling\\s+lama|terlama|terbesar|paling\\s+besar|hari\\s+ini|minggu\\s+ini|sehari|\\d+\\s*(mb|megabyte|gb|kb)|\\d+\\s*jam|pdf|word|excel|docx|xlsx|foto|gambar|lokal)\\b"), "")
+                    .replace(Regex("(?i)\\b(cari|file|berkas|dokumen|temukan|lihat|yang|ku|di|ke|dari|pada|dalam|selama|sejak|didownload|download|diunduh|unduh|tersimpan|dibuat|ada|semua|terakhir|terakhie|terbaru|paling\\s+baru|paling\\s+lama|terlama|terbesar|paling\\s+besar|hari\\s+ini|minggu\\s+ini|sehari|\\d+\\s*(mb|megabyte|gb|kb)|\\d+\\s*jam|pdf|word|excel|docx|xlsx|foto|gambar|lokal)\\b"), "")
                     .replace("\\s+".toRegex(), " ")
                     .trim()
 
@@ -196,7 +201,6 @@ class ActionRouter(context: Context) {
 
                 if (foundFiles.isEmpty()) {
                     if (maxAgeHours != null) {
-                        // Fallback: Jika tidak ada file baru di jendela waktu tersebut, tampilkan berkas terbaru yang ada
                         val recentFiles = fileTools.searchFilesAdvanced(
                             query = cleanQuery,
                             sortBy = "newest",
@@ -230,15 +234,43 @@ class ActionRouter(context: Context) {
     private suspend fun executeJsonAction(action: AgentAction): RouterResponse {
         return when (action.action.lowercase()) {
             "delete_file" -> RouterResponse(fileTools.deleteFileByName(action.file_name ?: action.query ?: ""))
+            
             "search_files" -> {
+                val rawQuery = (action.query ?: action.file_name ?: "").trim()
+                var hours = action.hours
+                if (hours == null) {
+                    val lower = rawQuery.lowercase()
+                    if (lower.contains("24 jam") || lower.contains("sehari") || lower.contains("1 hari")) hours = 24L
+                    else if (lower.contains("hari ini")) hours = 12L
+                }
+
+                // Bersihkan query dari kata hubung dan filter waktu
+                val clean = rawQuery
+                    .replace(Regex("(?i)\\b(cari|file|berkas|dokumen|yang|ku|di|ke|dari|pada|dalam|selama|sejak|didownload|download|diunduh|unduh|terakhir|terakhie|terbaru|hari\\s+ini|minggu\\s+ini|\\d+\\s*jam)\\b"), "")
+                    .replace("\\s+".toRegex(), " ")
+                    .trim()
+
                 val list = fileTools.searchFilesAdvanced(
-                    query = action.query ?: action.file_name ?: "",
+                    query = clean,
                     minSizeMb = action.min_size_mb,
                     maxSizeMb = action.max_size_mb,
-                    sortBy = action.sort_by
+                    sortBy = action.sort_by ?: "newest",
+                    maxAgeHours = hours,
+                    specificFolder = action.folder
                 )
-                RouterResponse("Ditemukan ${list.size} file:", list)
+
+                if (list.isEmpty() && hours != null) {
+                    val recent = fileTools.searchFilesAdvanced(query = clean, sortBy = "newest", specificFolder = action.folder)
+                    if (recent.isNotEmpty()) {
+                        RouterResponse("Tidak ada berkas dalam $hours jam terakhir. Berikut berkas terbaru yang cocok:", recent.take(8))
+                    } else {
+                        RouterResponse("Ditemukan 0 file.")
+                    }
+                } else {
+                    RouterResponse("Ditemukan ${list.size} file:", list)
+                }
             }
+
             "clean_duplicates" -> {
                 if (action.delete_duplicates == true) {
                     RouterResponse(fileTools.cleanDuplicateFiles(action.folder, deleteDuplicates = true))
@@ -247,10 +279,24 @@ class ActionRouter(context: Context) {
                     RouterResponse("Ditemukan ${list.size} file ganda:", list)
                 }
             }
+
             "images_to_pdf" -> RouterResponse(fileTools.convertImagesToPdf(action.images ?: emptyList(), action.output_pdf ?: "TOWR_Result.pdf"))
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
-            "share_wa" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", "whatsapp"))
+
+            // MENANGANI SHARE TEXT KE WHATSAPP SECARA LANGSUNG
+            "share_text", "share_wa" -> {
+                val text = action.text ?: action.content ?: ""
+                val target = action.target_app ?: "whatsapp"
+                val contact = action.contact_name
+                val result = shareBridgeTool.shareTextToApp(text, target)
+                val info = if (!contact.isNullOrBlank()) " untuk $contact" else ""
+                RouterResponse("$result$info")
+            }
+
+            "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
+            "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
+
             else -> RouterResponse("Aksi '${action.action}' tidak dikenali oleh sistem TOWR.")
         }
     }
