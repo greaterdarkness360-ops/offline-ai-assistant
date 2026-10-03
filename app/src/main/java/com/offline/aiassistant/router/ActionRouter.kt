@@ -64,63 +64,91 @@ class ActionRouter(context: Context) {
         val lower = trimmed.lowercase()
 
         when {
-            // EKSEKUSI PENGHAPUSAN FILE BERDASARKAN NAMA
-            lower.startsWith("hapus file") || lower.startsWith("hapus") -> {
-                if (lower.contains("ganda") || lower.contains("duplikat")) {
-                    val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
+            // HAPUS SEMUA KECUALI NOMOR X
+            lower.contains("kecuali nomor") || lower.contains("kecuali no") -> {
+                val numMatch = Regex("\\d+").find(lower)
+                if (numMatch != null) {
+                    val keepIndex = numMatch.value.toInt()
+                    RouterResponse(fileTools.deleteFilesExcept(keepIndex))
+                } else {
+                    RouterResponse("Sebutkan nomor berkas yang ingin disimpan.")
+                }
+            }
+
+            // HAPUS BERKAS / BERSIHKAN
+            lower.startsWith("hapus file") || lower.startsWith("hapus") || lower.startsWith("bersihkan") -> {
+                if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("double")) {
+                    val msg = fileTools.cleanDuplicateFiles(deleteDuplicates = true)
                     RouterResponse(msg)
                 } else {
                     val targetName = trimmed
-                        .replace(Regex("(?i)^(hapus file|hapus)\\s*"), "")
+                        .replace(Regex("(?i)^(hapus file|hapus|bersihkan)\\s*"), "")
                         .replace(Regex("(?i)(semua|yang bernama|file|berkas)\\s*"), "")
                         .trim()
 
                     if (targetName.isBlank()) {
                         RouterResponse("Sebutkan nama file yang ingin dihapus.")
                     } else {
-                        val msg = fileTools.deleteFileByName(targetName)
-                        RouterResponse(msg)
+                        RouterResponse(fileTools.deleteFileByName(targetName))
                     }
                 }
             }
 
-            lower.contains("telegram") || lower.contains("tele") -> {
-                val messageText = trimmed.replace(Regex("(?i)^(kirim ke telegram|kirim pesan ke telegram|bagikan ke telegram|telegram)\\s*[:,-]?\\s*"), "")
-                RouterResponse(shareBridgeTool.shareTextToApp(messageText, "telegram"))
+            // CEK FILE DUPLIKAT
+            lower.contains("file ganda") || lower.contains("duplikat") || lower.contains("file double") -> {
+                val list = fileTools.getDuplicateFilesList()
+                if (list.isEmpty()) {
+                    RouterResponse("Tidak ditemukan file duplikat di penyimpanan Anda.")
+                } else {
+                    RouterResponse("Ditemukan ${list.size} file duplikat di perangkat Anda:", list)
+                }
             }
 
-            lower.contains("notion") -> {
-                val noteContent = trimmed.replace(Regex("(?i)^(simpan ke notion|catatan notion|notion)\\s*[:,-]?\\s*"), "")
-                RouterResponse(shareBridgeTool.saveNoteForNotion("Catatan_TOWR", noteContent))
-            }
-
-            lower.startsWith("buka aplikasi") || lower.startsWith("buka") -> {
-                val appName = trimmed.replace(Regex("(?i)^(buka aplikasi|buka)\\s*"), "")
+            // BUKA / LUNCURKAN APLIKASI
+            lower.startsWith("buka") || lower.startsWith("luncurkan") || lower.contains("buka aplikasi") || lower.contains("luncurkan aplikasi") -> {
+                val appName = trimmed
+                    .replace(Regex("(?i)^(buka aplikasi|buka|luncurkan aplikasi|luncurkan)\\s*"), "")
+                    .trim()
                 val msg = if (appName.isBlank()) "Sebutkan nama aplikasi yang ingin dibuka." else appLauncherTool.openAppByName(appName)
                 RouterResponse(msg)
             }
 
-            lower.contains("file ganda") || lower.contains("duplikat") || lower.contains("file double") -> {
-                val list = fileTools.getDuplicateFilesList("Download")
-                RouterResponse("Ditemukan ${list.size} file duplikat di folder Download:", list)
-            }
-
-            lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
-                val imageList = extractImageNames(trimmed)
-                val msg = if (imageList.isEmpty()) "Sebutkan nama file gambar (contoh: foto1.jpg, foto2.jpg)." 
-                          else fileTools.convertImagesToPdf(imageList, "Dokumen_TOWR.pdf")
-                RouterResponse(msg)
-            }
-
+            // CEK AKTIVITAS & PENGGUNAAN
             lower.contains("aktivitas") || lower.contains("latar belakang") || lower.contains("pemakaian") -> {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
-            lower.startsWith("cari file") || lower.startsWith("cari") || lower.startsWith("temukan") -> {
+            // GABUNG GAMBAR KE PDF
+            lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
+                val imageList = extractImageNames(trimmed)
+                val msg = if (imageList.isEmpty()) "Sebutkan nama gambar (contoh: foto1.jpg, foto2.jpg)." 
+                          else fileTools.convertImagesToPdf(imageList, "Dokumen_TOWR.pdf")
+                RouterResponse(msg)
+            }
+
+            // PENCARIAN BERKAS (Lengkap dengan Filter Waktu, Ekstensi, Ukuran)
+            lower.startsWith("cari") || lower.startsWith("temukan") || lower.startsWith("lihat file") -> {
                 var minMb: Double? = null
                 var maxMb: Double? = null
                 var sortBy: String? = null
+                var maxAgeHours: Long? = null
+                val extensions = mutableListOf<String>()
 
+                // Filter Waktu Alami
+                when {
+                    lower.contains("24 jam") || lower.contains("sehari") || lower.contains("1 hari") -> maxAgeHours = 24L
+                    lower.contains("48 jam") || lower.contains("2 hari") -> maxAgeHours = 48L
+                    lower.contains("minggu ini") || lower.contains("7 hari") -> maxAgeHours = 168L
+                    lower.contains("hari ini") -> maxAgeHours = 12L
+                }
+
+                // Filter Ekstensi Alami
+                if (lower.contains("pdf")) extensions.add("pdf")
+                if (lower.contains("word") || lower.contains("docx") || lower.contains("doc")) { extensions.add("docx"); extensions.add("doc") }
+                if (lower.contains("excel") || lower.contains("xlsx") || lower.contains("xls")) { extensions.add("xlsx"); extensions.add("xls") }
+                if (lower.contains("gambar") || lower.contains("foto") || lower.contains("image")) { extensions.addAll(listOf("jpg", "jpeg", "png", "webp")) }
+
+                // Filter Ukuran
                 val sizeMatch = Regex("(lebih dari|>|di atas)\\s*(\\d+)\\s*(mb|megabyte)", RegexOption.IGNORE_CASE).find(lower)
                 if (sizeMatch != null) minMb = sizeMatch.groupValues[2].toDoubleOrNull()
 
@@ -131,32 +159,43 @@ class ActionRouter(context: Context) {
                 if (lower.contains("paling baru") || lower.contains("terbaru")) sortBy = "newest"
                 if (lower.contains("paling besar") || lower.contains("terbesar")) sortBy = "largest"
 
+                // Bersihkan kata perintah agar hanya tersisa nama inti berkas
                 val cleanQuery = trimmed
-                    .replace(Regex("(?i)^(cari file|cari|temukan)\\s*"), "")
-                    .replace(Regex("(?i)(yang|berukuran|lebih dari|kurang dari|di atas|di bawah|\\d+\\s*mb|paling lama|paling baru|paling besar|terlama|terbaru|terbesar)"), "")
+                    .replace(Regex("(?i)^(cari file|cari|temukan|lihat file)\\s*"), "")
+                    .replace(Regex("(?i)(dari|dalam|pada|selama|yang|berukuran|lebih dari|kurang dari|di atas|di bawah|\\d+\\s*(mb|megabyte)|\\d+\\s*jam|terakhir|terakhie|hari ini|minggu ini|sehari|paling lama|paling baru|paling besar|terlama|terbaru|terbesar|pdf|word|excel|docx|xlsx|foto|gambar)"), "")
+                    .replace(Regex("(?i)(lokal|berkas|file)"), "")
                     .trim()
 
-                val foundFiles = fileTools.searchFilesAdvanced(cleanQuery, minMb, maxMb, sortBy)
+                val foundFiles = fileTools.searchFilesAdvanced(
+                    query = cleanQuery,
+                    minSizeMb = minMb,
+                    maxSizeMb = maxMb,
+                    sortBy = sortBy,
+                    maxAgeHours = maxAgeHours,
+                    extensions = extensions
+                )
 
                 if (foundFiles.isEmpty()) {
-                    RouterResponse("Tidak ditemukan file yang memenuhi kriteria pencarian.")
+                    RouterResponse("Tidak ditemukan berkas yang memenuhi kriteria pencarian.")
                 } else {
-                    RouterResponse("Ditemukan ${foundFiles.size} file yang cocok:", foundFiles)
+                    val kriteriaText = when {
+                        maxAgeHours != null -> " (dalam $maxAgeHours jam terakhir)"
+                        extensions.isNotEmpty() -> " (tipe ${extensions.joinToString()})"
+                        else -> ""
+                    }
+                    RouterResponse("Ditemukan ${foundFiles.size} berkas$kriteriaText yang cocok:", foundFiles)
                 }
             }
 
             else -> {
-                RouterResponse("Instruksi diterima: '$trimmed'.\nGunakan tombol cepat atau beri perintah spesifik.")
+                RouterResponse("Instruksi diterima: '$trimmed'.\nGunakan tombol cepat atau beri perintah spesifik seperti 'cari file pdf', 'cek file duplikat', atau 'buka kalkulator'.")
             }
         }
     }
 
     private suspend fun executeJsonAction(action: AgentAction): RouterResponse {
         return when (action.action.lowercase()) {
-            "delete_file" -> {
-                val target = action.file_name ?: action.query ?: ""
-                RouterResponse(fileTools.deleteFileByName(target))
-            }
+            "delete_file" -> RouterResponse(fileTools.deleteFileByName(action.file_name ?: action.query ?: ""))
             "search_files" -> {
                 val list = fileTools.searchFilesAdvanced(
                     query = action.query ?: action.file_name ?: "",
@@ -168,9 +207,9 @@ class ActionRouter(context: Context) {
             }
             "clean_duplicates" -> {
                 if (action.delete_duplicates == true) {
-                    RouterResponse(fileTools.cleanDuplicateFiles(action.folder ?: "Download", deleteDuplicates = true))
+                    RouterResponse(fileTools.cleanDuplicateFiles(action.folder, deleteDuplicates = true))
                 } else {
-                    val list = fileTools.getDuplicateFilesList(action.folder ?: "Download")
+                    val list = fileTools.getDuplicateFilesList(action.folder)
                     RouterResponse("Ditemukan ${list.size} file ganda:", list)
                 }
             }
@@ -178,9 +217,6 @@ class ActionRouter(context: Context) {
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
             "share_wa" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", "whatsapp"))
-            "share_text" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", action.target_app ?: "general"))
-            "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
-            "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
             else -> RouterResponse("Aksi '${action.action}' tidak dikenali oleh sistem TOWR.")
         }
     }
@@ -195,9 +231,7 @@ class ActionRouter(context: Context) {
         val end = text.lastIndexOf('}')
         if (start != -1 && end != -1 && end > start) {
             val candidate = text.substring(start, end + 1).trim()
-            if (candidate.contains("\"action\"")) {
-                return candidate
-            }
+            if (candidate.contains("\"action\"")) return candidate
         }
         return null
     }
