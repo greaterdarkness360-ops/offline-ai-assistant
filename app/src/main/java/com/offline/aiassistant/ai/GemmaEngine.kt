@@ -1,6 +1,7 @@
 package com.offline.aiassistant.ai
 
 import android.content.Context
+import android.os.Environment
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
@@ -14,6 +15,9 @@ class GemmaEngine(private val context: Context) {
 
     private var engine: Engine? = null
     var isModelLoaded: Boolean = false
+        private set
+
+    var loadedModelPath: String? = null
         private set
 
     private val systemPrompt = """
@@ -33,10 +37,36 @@ class GemmaEngine(private val context: Context) {
         2. Jika pengguna bertanya hal umum (sains, geografi, sejarah, definisi, logika, santai), jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa format JSON.
     """.trimIndent()
 
+    // Fungsi pencari file model otomatis di memori internal ponsel
+    fun findModelPath(): String? {
+        val root = Environment.getExternalStorageDirectory() ?: return null
+        val candidates = listOf(
+            File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
+            File(root, "Download/gemma-4-e2b-it-gpu.litertlm"),
+            File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
+            File(root, "gemma-4-E2B-it-gpu.litertlm")
+        )
+        for (file in candidates) {
+            if (file.exists() && file.canRead()) return file.absolutePath
+        }
+
+        // Cari berkas .litertlm lain yang ada di folder Download
+        val downloadDir = File(root, "Download")
+        if (downloadDir.exists()) {
+            val found = downloadDir.listFiles { f -> 
+                f.isFile && f.name.endsWith(".litertlm", ignoreCase = true) 
+            }?.firstOrNull()
+            if (found != null) return found.absolutePath
+        }
+
+        return null
+    }
+
     suspend fun loadModel(modelPath: String): String = withContext(Dispatchers.IO) {
         val file = File(modelPath)
         if (!file.exists()) {
-            return@withContext "File model tidak ditemukan di lokasi: $modelPath"
+            isModelLoaded = false
+            return@withContext "File model tidak ditemukan: $modelPath"
         }
 
         try {
@@ -48,6 +78,7 @@ class GemmaEngine(private val context: Context) {
             newEngine.initialize()
             engine = newEngine
             isModelLoaded = true
+            loadedModelPath = modelPath
             "Model Gemma On-Device (.litertlm) berhasil aktif via GPU HP!"
         } catch (eGpu: Exception) {
             try {
@@ -59,7 +90,8 @@ class GemmaEngine(private val context: Context) {
                 fallbackEngine.initialize()
                 engine = fallbackEngine
                 isModelLoaded = true
-                "Model Gemma On-Device berhasil aktif via CPU mode!"
+                loadedModelPath = modelPath
+                "Model Gemma On-Device aktif via CPU mode!"
             } catch (eCpu: Exception) {
                 isModelLoaded = false
                 "Gagal memuat model: ${eCpu.localizedMessage ?: eGpu.localizedMessage}"
@@ -76,7 +108,6 @@ class GemmaEngine(private val context: Context) {
         val fullInput = "$systemPrompt\n\nPengguna: $prompt\nTOWR:"
 
         try {
-            // Melengkapi 3 parameter wajib: topK = 1 (untuk GPU), topP = 0.95, temperature = 0.8
             val conversationConfig = ConversationConfig(
                 samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = 0.8)
             )
