@@ -20,24 +20,25 @@ class GemmaEngine(private val context: Context) {
     var loadedModelPath: String? = null
         private set
 
+    // Prompt sistem terstruktur untuk memaksa Gemma memanggil alat (Tool Calling)
     private val systemPrompt = """
-        Kamu adalah TOWR, asisten AI pribadi on-device 100% offline dan aman yang dibuat oleh Natanael.
-        
-        PANDUAN MENJAWAB:
-        1. Jika pengguna meminta tindakan fisik di HP, jawab HANYA dalam format JSON satu baris:
-           - Buka aplikasi: {"action": "open_app", "app_name": "NamaAplikasi"}
-           - Cari file: {"action": "search_files", "query": "kata_kunci"}
-           - Cek file ganda: {"action": "clean_duplicates", "folder": "Download", "delete_duplicates": false}
-           - Hapus file ganda: {"action": "clean_duplicates", "folder": "Download", "delete_duplicates": true}
-           - Satukan gambar ke PDF: {"action": "images_to_pdf", "images": ["foto1.jpg", "foto2.jpg"], "output_pdf": "Nama.pdf"}
-           - Cek aktivitas aplikasi: {"action": "inspect_usage"}
-           - Kirim teks ke Telegram: {"action": "share_text", "target_app": "telegram", "text": "isi pesan"}
-           - Simpan catatan ke Notion: {"action": "save_note_for_notion", "title": "Judul", "content": "isi catatan"}
-        
-        2. Jika pengguna bertanya hal umum (sains, geografi, sejarah, definisi, logika, santai), jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa format JSON.
+        Kamu adalah TOWR, asisten AI pribadi on-device pintar di Android buatan Natanael.
+        Kamu MEMILIKI AKSES PENUH ke alat perangkat melalui format JSON.
+        JANGAN PERNAH menolak atau berkata tidak memiliki akses.
+
+        ATURAN RESPON:
+        1. Jika pengguna meminta aksi perangkat, jawab HANYA dalam 1 baris JSON persis:
+           - Kirim WhatsApp: {"action": "share_text", "target_app": "whatsapp", "text": "isi pesan", "contact_name": "nama"}
+           - Cari file baru/waktu: {"action": "search_files", "query": "nama_file", "hours": 24}
+           - Cari file umum: {"action": "search_files", "query": "nama_file"}
+           - Buka aplikasi: {"action": "open_app", "app_name": "nama_aplikasi"}
+           - Cek file duplikat: {"action": "clean_duplicates", "delete_duplicates": false}
+           - Hapus file duplikat: {"action": "clean_duplicates", "delete_duplicates": true}
+           - Cek pemakaian HP: {"action": "inspect_usage"}
+        2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
     """.trimIndent()
 
-    // Fungsi pencari file model otomatis di memori internal ponsel
+    // Mendeteksi otomatis file model di memori internal ponsel
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
         val candidates = listOf(
@@ -50,7 +51,6 @@ class GemmaEngine(private val context: Context) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
-        // Cari berkas .litertlm lain yang ada di folder Download
         val downloadDir = File(root, "Download")
         if (downloadDir.exists()) {
             val found = downloadDir.listFiles { f -> 
