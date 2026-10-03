@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -125,7 +126,7 @@ fun TowrTheme(content: @Composable () -> Unit) {
 }
 
 // =========================================================================
-// LAYAR UTAMA (BUBBLE CHAT & INTERAKTIF)
+// LAYAR UTAMA (HYBRID: GEMMA 2B ON-DEVICE + ACTION ROUTER FALLBACK)
 // =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,28 +135,57 @@ fun TowrMainScreen() {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var inputPrompt by remember { mutableStateOf("") }
-    var selectedModelName by remember { mutableStateOf<String?>("gemma-4-E2B-it-gpu.litertlm") }
 
     val actionRouter = remember { ActionRouter(context) }
+    val gemmaEngine = remember { GemmaEngine(context) }
 
+    var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
+    var isGemmaReady by remember { mutableStateOf(false) }
+
+    // Otomatis mencari dan memuat file model gemma saat aplikasi dibuka
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val detectedPath = gemmaEngine.findModelPath()
+            if (detectedPath != null) {
+                modelStatusLabel = "Memuat ke GPU..."
+                val loadMsg = gemmaEngine.loadModel(detectedPath)
+                if (gemmaEngine.isModelLoaded) {
+                    isGemmaReady = true
+                    val fileName = File(detectedPath).name
+                    modelStatusLabel = "Gemma Aktif: $fileName"
+                } else {
+                    modelStatusLabel = "Mode Native (Gemma: Gagal GPU)"
+                }
+            } else {
+                modelStatusLabel = "Kaitkan Model Gemma"
+            }
+        }
+    }
+
+    // Pemilih file model manual jika ingin mengubah lokasi file model
     val modelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Model Gemma Terpilih"
-            selectedModelName = fileName
-            Toast.makeText(context, "Model Gemma dikaitkan: $fileName", Toast.LENGTH_LONG).show()
+            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Model Terpilih"
+            modelStatusLabel = "Memuat $fileName..."
+            coroutineScope.launch(Dispatchers.IO) {
+                val detected = gemmaEngine.findModelPath() ?: "/storage/emulated/0/Download/$fileName"
+                gemmaEngine.loadModel(detected)
+                isGemmaReady = gemmaEngine.isModelLoaded
+                modelStatusLabel = if (isGemmaReady) "Gemma Aktif: $fileName" else "Gagal memuat $fileName"
+            }
         }
     }
 
     val messages = remember { mutableStateListOf<TowrChatMessage>() }
 
+    // Eksekusi instruksi: Lewat Gemma jika siap, atau lewat ActionRouter langsung
     val sendInstruction: (String) -> Unit = { rawText ->
         val trimmed = rawText.trim()
         if (trimmed.isNotBlank()) {
             val currentTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
 
-            // 1. Tampilkan pesan user
             messages.add(
                 TowrChatMessage(
                     sender = MessageSender.USER,
@@ -164,7 +194,6 @@ fun TowrMainScreen() {
                 )
             )
 
-            // 2. Tampilkan instan respon "Perintah diterima"
             val loadingMessageId = UUID.randomUUID().toString()
             messages.add(
                 TowrChatMessage(
@@ -176,17 +205,31 @@ fun TowrMainScreen() {
                 )
             )
 
-            // 3. Jalankan pemrosesan di background thread
             coroutineScope.launch {
                 listState.animateScrollToItem(messages.size - 1)
 
                 val startTime = System.currentTimeMillis()
-                val response = withContext(Dispatchers.IO) {
-                    actionRouter.processInstruction(trimmed)
+                val (finalMessage, files, toolName) = withContext(Dispatchers.IO) {
+                    if (gemmaEngine.isModelLoaded) {
+                        // 1. Tanyakan ke Gemma on-device
+                        val aiResponse = gemmaEngine.askGemma(trimmed)
+                        // Jika Gemma menghasilkan JSON aksi, jalankan lewat ActionRouter
+                        if (aiResponse.contains("\"action\"")) {
+                            val routerRes = actionRouter.processInstruction(aiResponse)
+                            Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
+                        } else {
+                            // Jawaban teks umum dari Gemma
+                            Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
+                        }
+                    } else {
+                        // 2. Fallback Rule-Engine jika Gemma belum selesai dimuat
+                        val routerRes = actionRouter.processInstruction(trimmed)
+                        Triple(routerRes.message, routerRes.files, "ActionRouter Native Engine")
+                    }
                 }
                 val latency = System.currentTimeMillis() - startTime
 
-                val resultFiles = response.files.map {
+                val resultFiles = files.map {
                     FileSearchResult(
                         fileName = it.name,
                         filePath = it.path,
@@ -198,20 +241,19 @@ fun TowrMainScreen() {
 
                 val log = listOf(
                     ToolExecutionLog(
-                        toolName = "ActionRouter.processInstruction()",
+                        toolName = toolName,
                         actionDetail = "Input: '$trimmed'",
                         latencyMs = latency,
                         isSuccess = true
                     )
                 )
 
-                // 4. Perbarui status loading menjadi hasil akhir
                 val targetIndex = messages.indexOfFirst { it.id == loadingMessageId }
                 if (targetIndex != -1) {
                     messages[targetIndex] = TowrChatMessage(
                         id = loadingMessageId,
                         sender = MessageSender.TOWR,
-                        messageText = response.message,
+                        messageText = finalMessage,
                         timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                         thinkingProcess = log,
                         foundFiles = if (resultFiles.isNotEmpty()) resultFiles else null,
@@ -228,7 +270,8 @@ fun TowrMainScreen() {
         containerColor = TowrBgDark,
         topBar = {
             TowrTopBar(
-                modelName = selectedModelName,
+                modelStatus = modelStatusLabel,
+                isReady = isGemmaReady,
                 onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
                 onClearChatClicked = {
                     messages.clear()
@@ -319,7 +362,8 @@ fun TowrMainScreen() {
 // =========================================================================
 @Composable
 fun TowrTopBar(
-    modelName: String?,
+    modelStatus: String,
+    isReady: Boolean,
     onSelectModelClicked: () -> Unit,
     onClearChatClicked: () -> Unit
 ) {
@@ -356,8 +400,8 @@ fun TowrTopBar(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = modelName ?: "Kaitkan Model Gemma",
-                            color = TowrSkyBlue,
+                            text = modelStatus,
+                            color = if (isReady) TowrEmeraldGreen else TowrSkyBlue,
                             fontSize = 11.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
