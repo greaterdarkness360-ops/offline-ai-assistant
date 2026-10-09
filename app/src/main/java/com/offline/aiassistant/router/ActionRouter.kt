@@ -120,7 +120,22 @@ class ActionRouter(context: Context) {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
-            // KIRIM PESAN KE WHATSAPP / TELEGRAM / NOTION
+            // KIRIM PESAN KE WHATSAPP DENGAN RESOLUSI KONTAK LOKAL
+            lower.startsWith("kirim") && (lower.contains("wa") || lower.contains("whatsapp")) -> {
+                val match = Regex("(?i)^kirim\\s+(.+?)\\s+ke\\s+(.+?)(?:\\s+(?:di|lewat|via)?\\s*(?:wa|whatsapp))?$").find(trimmed)
+                if (match != null) {
+                    val text = match.groupValues[1].trim()
+                    val contact = match.groupValues[2].trim()
+                    RouterResponse(shareBridgeTool.shareTextToApp(text, "whatsapp", contact))
+                } else {
+                    val messageText = trimmed
+                        .replace(Regex("(?i)^(kirim pesan|kirim|chat|bagikan|pesan)\\s*"), "")
+                        .replace(Regex("(?i)(ke|di|lewat|via)\\s*(wa|whatsapp)\\s*"), "")
+                        .trim()
+                    RouterResponse(shareBridgeTool.shareTextToApp(messageText, "whatsapp"))
+                }
+            }
+
             lower.contains("wa") || lower.contains("whatsapp") -> {
                 val messageText = trimmed
                     .replace(Regex("(?i)^(kirim pesan|kirim|chat|bagikan|pesan)\\s*"), "")
@@ -244,7 +259,6 @@ class ActionRouter(context: Context) {
                     else if (lower.contains("hari ini")) hours = 12L
                 }
 
-                // Bersihkan query dari kata hubung dan filter waktu
                 val clean = rawQuery
                     .replace(Regex("(?i)\\b(cari|file|berkas|dokumen|yang|ku|di|ke|dari|pada|dalam|selama|sejak|didownload|download|diunduh|unduh|terakhir|terakhie|terbaru|hari\\s+ini|minggu\\s+ini|\\d+\\s*jam)\\b"), "")
                     .replace("\\s+".toRegex(), " ")
@@ -284,14 +298,13 @@ class ActionRouter(context: Context) {
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
 
-            // MENANGANI SHARE TEXT KE WHATSAPP SECARA LANGSUNG
+            // MENANGANI SHARE TEXT KE WHATSAPP DENGAN RESOLUSI KONTAK LOKAL
             "share_text", "share_wa" -> {
                 val text = action.text ?: action.content ?: ""
                 val target = action.target_app ?: "whatsapp"
                 val contact = action.contact_name
-                val result = shareBridgeTool.shareTextToApp(text, target)
-                val info = if (!contact.isNullOrBlank()) " untuk $contact" else ""
-                RouterResponse("$result$info")
+                val result = shareBridgeTool.shareTextToApp(text, target, contact)
+                RouterResponse(result)
             }
 
             "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
