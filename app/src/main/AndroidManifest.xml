@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 100% Offline Tanpa Izin INTERNET -->
+    <!-- Izin Penyimpanan & Statistik Pemakaian -->
     <uses-permission 
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
         tools:ignore="ScopedStorage" />
@@ -11,7 +11,15 @@
         android:name="android.permission.PACKAGE_USAGE_STATS" 
         tools:ignore="ProtectedPermissions" />
 
+    <!-- IZIN BACA BUKU KONTAK LOKAL (FASE 5) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
     <queries>
+        <!-- Paket Aplikasi Chat -->
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="org.telegram.messenger" />
+
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -19,6 +27,10 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 
