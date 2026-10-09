@@ -1,7 +1,9 @@
 package com.offline.aiassistant
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -42,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
@@ -130,7 +133,22 @@ fun TowrMainScreen() {
     var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
     var isGemmaReady by remember { mutableStateOf(false) }
 
+    // Launcher izin baca kontak perangkat (Fase 5)
+    val contactPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (!isGranted) {
+            Toast.makeText(context, "Izin kontak tidak aktif. Kontak harus dipilih manual di WhatsApp.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     LaunchedEffect(Unit) {
+        // Minta izin baca kontak jika belum aktif
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+        }
+
+        // Cari dan muat model Gemma otomatis
         withContext(Dispatchers.IO) {
             val detectedPath = gemmaEngine.findModelPath()
             if (detectedPath != null) {
