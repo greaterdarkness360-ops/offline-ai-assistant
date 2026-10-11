@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -150,18 +151,49 @@ fun TowrMainScreen() {
             val detectedPath = gemmaEngine.findModelPath()
             if (detectedPath != null) {
                 modelStatusLabel = "Memuat ke GPU..."
-                gemmaEngine.loadModel(detectedPath)
+                val loadMsg = gemmaEngine.loadModel(detectedPath)
                 if (gemmaEngine.isModelLoaded) {
                     isGemmaReady = true
                     val fileName = File(detectedPath).name
                     modelStatusLabel = "Gemma Aktif: $fileName"
                 } else {
-                    modelStatusLabel = "Mode Native (Gemma: Fallback)"
+                    modelStatusLabel = "Gagal memuat model"
                 }
             } else {
                 modelStatusLabel = "Kaitkan Model Gemma"
             }
         }
+    }
+
+    // Resolusi jalur file fisik dari URI hasil pilihan dokumen
+    fun resolvePathFromUri(uri: Uri): String? {
+        try {
+            val path = uri.path ?: return null
+            val root = Environment.getExternalStorageDirectory() ?: return null
+
+            if (path.contains("raw:")) {
+                val raw = path.substringAfter("raw:")
+                if (File(raw).exists()) return raw
+            }
+
+            if (path.contains("primary:")) {
+                val rel = path.substringAfter("primary:")
+                val target = File(root, rel)
+                if (target.exists()) return target.absolutePath
+            }
+
+            val decoded = Uri.decode(path)
+            if (decoded.contains("primary:")) {
+                val rel = decoded.substringAfter("primary:")
+                val target = File(root, rel)
+                if (target.exists()) return target.absolutePath
+            }
+            if (decoded.contains("raw:")) {
+                val raw = decoded.substringAfter("raw:")
+                if (File(raw).exists()) return raw
+            }
+        } catch (e: Exception) {}
+        return null
     }
 
     val modelPickerLauncher = rememberLauncherForActivityResult(
@@ -170,11 +202,24 @@ fun TowrMainScreen() {
         if (uri != null) {
             modelStatusLabel = "Memuat model..."
             coroutineScope.launch(Dispatchers.IO) {
-                val detected = gemmaEngine.findModelPath() ?: "/storage/emulated/0/Download/gemma-4-E2B-it-gpu.litertlm"
-                val result = gemmaEngine.loadModel(detected)
+                // Cari jalur fisik dari URI atau gunakan auto-detect
+                val exactPath = resolvePathFromUri(uri) 
+                    ?: gemmaEngine.findModelPath() 
+                    ?: "/storage/emulated/0/Documents/gemma-4-E2B-it-gpu.litertlm"
+
+                val result = gemmaEngine.loadModel(exactPath)
                 isGemmaReady = gemmaEngine.isModelLoaded
-                val name = File(detected).name
-                modelStatusLabel = if (isGemmaReady) "Gemma Aktif: $name" else "Gagal memuat $name"
+                val name = File(exactPath).name
+
+                withContext(Dispatchers.Main) {
+                    if (isGemmaReady) {
+                        modelStatusLabel = "Gemma Aktif: $name"
+                        Toast.makeText(context, "Model aktif: $name", Toast.LENGTH_SHORT).show()
+                    } else {
+                        modelStatusLabel = "Gagal memuat $name"
+                        Toast.makeText(context, gemmaEngine.errorMessage ?: "Gagal memuat model", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         }
     }
@@ -274,7 +319,6 @@ fun TowrMainScreen() {
         }
     }
 
-    // Scaffold dengan layout terkunci rapat tanpa celah kosong
     Scaffold(
         containerColor = TowrBgDark,
         bottomBar = {
@@ -294,7 +338,6 @@ fun TowrMainScreen() {
                 .fillMaxSize()
                 .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
-            // 1. Header Terkunci Rapat di Puncak Layar
             TowrTopBar(
                 modelStatus = modelStatusLabel,
                 isReady = isGemmaReady,
@@ -305,7 +348,6 @@ fun TowrMainScreen() {
                 }
             )
 
-            // 2. Baris Tombol Cepat Tepat di Bawah Header
             QuickActionChipsRow(
                 onChipClicked = { chipAction ->
                     when (chipAction) {
@@ -320,7 +362,6 @@ fun TowrMainScreen() {
                 }
             )
 
-            // 3. Area Chat Fleksibel Mengisi Sisa Layar
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -368,9 +409,6 @@ fun TowrMainScreen() {
     }
 }
 
-// =========================================================================
-// HEADER TERKUNCI (COMPACT & TIDAK BISA MELOROT)
-// =========================================================================
 @Composable
 fun TowrTopBar(
     modelStatus: String,
@@ -382,7 +420,7 @@ fun TowrTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(TowrBgDark)
-            .statusBarsPadding() // Langsung menempel rapi di bawah bilah status HP
+            .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
         Row(
@@ -390,7 +428,6 @@ fun TowrTopBar(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Sisi Kiri: Ikon T + Judul + Status Model (Lebar Fleksibel)
             Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically
@@ -435,7 +472,6 @@ fun TowrTopBar(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            // Sisi Kanan: Tombol Hapus + Badge 100% OFFLINE (Terkunci Rapi)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClearChatClicked, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(18.dp))
