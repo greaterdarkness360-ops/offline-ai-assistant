@@ -40,22 +40,23 @@ class GemmaEngine(private val context: Context) {
         2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
     """.trimIndent()
 
-    // Mendeteksi otomatis file model .litertlm di Dokumen, Documents, Download, dan subfoldernya
+    // Mencari file model langsung di Documents, Dokumen, atau Download
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
 
-        // 1. Cek langsung di lokasi-lokasi favorit
-        val candidates = listOf(
+        // 1. Prioritas utama: Folder Documents sesuai lokasi foto Anda
+        val directCandidates = listOf(
             File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
+            File(root, "Documents/gemma-4-e2b-it-gpu.litertlm"),
             File(root, "Dokumen/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "gemma-4-E2B-it-gpu.litertlm")
         )
-        for (file in candidates) {
+        for (file in directCandidates) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
-        // 2. Telusuri folder Dokumen / Documents hingga kedalaman 3 subfolder
+        // 2. Telusuri folder Documents / Dokumen jika nama atau huruf besar/kecil berbeda
         val docDirs = listOf(
             File(root, "Documents"),
             File(root, "Dokumen"),
@@ -83,7 +84,7 @@ class GemmaEngine(private val context: Context) {
             return@withContext errorMessage!!
         }
 
-        // Bebaskan instansiasi lama dari memori GPU
+        // Bebaskan instansiasi lama dari memori GPU agar tidak Out-of-Memory
         release()
 
         try {
@@ -97,7 +98,7 @@ class GemmaEngine(private val context: Context) {
             isModelLoaded = true
             loadedModelPath = file.absolutePath
             errorMessage = null
-            "Model Gemma On-Device (.litertlm) berhasil aktif via GPU HP!"
+            "Model Gemma On-Device (.litertlm) aktif via GPU!"
         } catch (eGpu: Exception) {
             try {
                 val cpuConfig = EngineConfig(
@@ -110,7 +111,7 @@ class GemmaEngine(private val context: Context) {
                 isModelLoaded = true
                 loadedModelPath = file.absolutePath
                 errorMessage = null
-                "Model Gemma On-Device aktif via CPU mode!"
+                "Model Gemma On-Device aktif via CPU!"
             } catch (eCpu: Exception) {
                 isModelLoaded = false
                 errorMessage = eGpu.localizedMessage ?: eCpu.localizedMessage ?: "Gagal inisialisasi engine"
