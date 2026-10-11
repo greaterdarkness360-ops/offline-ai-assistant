@@ -11,6 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
+// Model penyimpanan satu putaran percakapan
+data class ChatTurn(val userPrompt: String, val aiResponse: String)
+
 class GemmaEngine(private val context: Context) {
 
     private var engine: Engine? = null
@@ -23,6 +26,9 @@ class GemmaEngine(private val context: Context) {
     var errorMessage: String? = null
         private set
 
+    // Buffer berjalan: Menyimpan hingga 4 putaran percakapan terakhir
+    private val conversationHistory = mutableListOf<ChatTurn>()
+
     private val systemPrompt = """
         Kamu adalah TOWR, asisten AI pribadi on-device pintar di Android buatan Natanael.
         Kamu MEMILIKI AKSES PENUH ke alat perangkat melalui format JSON.
@@ -31,32 +37,30 @@ class GemmaEngine(private val context: Context) {
         ATURAN RESPON:
         1. Jika pengguna meminta aksi perangkat, jawab HANYA dalam 1 baris JSON persis:
            - Kirim WhatsApp: {"action": "share_text", "target_app": "whatsapp", "text": "isi pesan", "contact_name": "nama"}
+           - Kirim file ke WhatsApp: {"action": "share_file", "file_path": "nama_file_atau_nomor", "target_app": "whatsapp"}
            - Cari file baru/waktu: {"action": "search_files", "query": "nama_file", "hours": 24}
            - Cari file umum: {"action": "search_files", "query": "nama_file"}
            - Buka aplikasi: {"action": "open_app", "app_name": "nama_aplikasi"}
            - Cek file duplikat: {"action": "clean_duplicates", "delete_duplicates": false}
            - Hapus file duplikat: {"action": "clean_duplicates", "delete_duplicates": true}
            - Cek pemakaian HP: {"action": "inspect_usage"}
-        2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
+        2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai, pertanyaan lanjutan), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
     """.trimIndent()
 
-    // Mencari file model langsung di Documents, Dokumen, atau Download
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
 
-        // 1. Prioritas utama: Folder Documents sesuai lokasi foto Anda
-        val directCandidates = listOf(
+        val candidates = listOf(
             File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Documents/gemma-4-e2b-it-gpu.litertlm"),
             File(root, "Dokumen/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "gemma-4-E2B-it-gpu.litertlm")
         )
-        for (file in directCandidates) {
+        for (file in candidates) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
-        // 2. Telusuri folder Documents / Dokumen jika nama atau huruf besar/kecil berbeda
         val docDirs = listOf(
             File(root, "Documents"),
             File(root, "Dokumen"),
@@ -84,7 +88,6 @@ class GemmaEngine(private val context: Context) {
             return@withContext errorMessage!!
         }
 
-        // Bebaskan instansiasi lama dari memori GPU agar tidak Out-of-Memory
         release()
 
         try {
@@ -120,13 +123,30 @@ class GemmaEngine(private val context: Context) {
         }
     }
 
+    // Membangun prompt gabungan yang menyertakan riwayat percakapan sebelumnya
+    private fun constructPromptWithHistory(currentPrompt: String): String {
+        val sb = StringBuilder()
+        sb.append("<start_of_turn>system\n").append(systemPrompt).append("<end_of_turn>\n")
+
+        // Sisipkan riwayat putaran obrolan sebelumnya
+        for (turn in conversationHistory) {
+            sb.append("<start_of_turn>user\n").append(turn.userPrompt).append("<end_of_turn>\n")
+            sb.append("<start_of_turn>model\n").append(turn.aiResponse).append("<end_of_turn>\n")
+        }
+
+        // Sisipkan instruksi user saat ini
+        sb.append("<start_of_turn>user\n").append(currentPrompt).append("<end_of_turn>\n")
+        sb.append("<start_of_turn>model\n")
+        return sb.toString()
+    }
+
     suspend fun askGemma(prompt: String): String = withContext(Dispatchers.IO) {
         val activeEngine = engine
         if (activeEngine == null || !isModelLoaded) {
             return@withContext "MODEL_NOT_READY"
         }
 
-        val fullInput = "$systemPrompt\n\nPengguna: $prompt\nTOWR:"
+        val fullInput = constructPromptWithHistory(prompt)
 
         try {
             val conversationConfig = ConversationConfig(
@@ -140,11 +160,27 @@ class GemmaEngine(private val context: Context) {
         }
     }
 
+    // Menyimpan putaran percakapan ke buffer (dibatasi 4 putaran terbaru)
+    fun addTurn(userPrompt: String, aiResponse: String) {
+        if (userPrompt.isNotBlank() && aiResponse.isNotBlank()) {
+            conversationHistory.add(ChatTurn(userPrompt, aiResponse))
+            if (conversationHistory.size > 4) {
+                conversationHistory.removeAt(0)
+            }
+        }
+    }
+
+    // Menghapus riwayat memori percakapan
+    fun clearHistory() {
+        conversationHistory.clear()
+    }
+
     fun release() {
         try {
             engine?.close()
         } catch (ignored: Exception) {}
         engine = null
         isModelLoaded = false
+        clearHistory()
     }
 }
