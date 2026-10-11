@@ -66,7 +66,6 @@ class ActionRouter(context: Context) {
         val lower = trimmed.lowercase()
 
         when {
-            // HAPUS SEMUA KECUALI NOMOR X
             lower.contains("kecuali nomor") || lower.contains("kecuali no") -> {
                 val numMatch = Regex("\\d+").find(lower)
                 if (numMatch != null) {
@@ -77,7 +76,6 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            // HAPUS BERKAS / BERSIHKAN DUPLIKAT
             lower.startsWith("hapus file") || lower.startsWith("hapus") || lower.startsWith("bersihkan") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("double")) {
                     val msg = fileTools.cleanDuplicateFiles(deleteDuplicates = true)
@@ -96,7 +94,6 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            // CEK FILE DUPLIKAT
             lower.contains("file ganda") || lower.contains("duplikat") || lower.contains("file double") -> {
                 val list = fileTools.getDuplicateFilesList()
                 if (list.isEmpty()) {
@@ -106,7 +103,6 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            // BUKA / LUNCURKAN APLIKASI
             lower.startsWith("buka") || lower.startsWith("luncurkan") || lower.contains("buka aplikasi") || lower.contains("luncurkan aplikasi") -> {
                 val appName = trimmed
                     .replace(Regex("(?i)^(buka aplikasi|buka|luncurkan aplikasi|luncurkan)\\s*"), "")
@@ -115,12 +111,10 @@ class ActionRouter(context: Context) {
                 RouterResponse(msg)
             }
 
-            // CEK AKTIVITAS & PENGGUNAAN
             lower.contains("aktivitas") || lower.contains("latar belakang") || lower.contains("pemakaian") -> {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
-            // KIRIM PESAN KE WHATSAPP DENGAN RESOLUSI KONTAK LOKAL
             lower.startsWith("kirim") && (lower.contains("wa") || lower.contains("whatsapp")) -> {
                 val match = Regex("(?i)^kirim\\s+(.+?)\\s+ke\\s+(.+?)(?:\\s+(?:di|lewat|via)?\\s*(?:wa|whatsapp))?$").find(trimmed)
                 if (match != null) {
@@ -154,7 +148,6 @@ class ActionRouter(context: Context) {
                 RouterResponse(shareBridgeTool.saveNoteForNotion("Catatan_TOWR", noteContent))
             }
 
-            // GABUNG GAMBAR KE PDF
             lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
                 val imageList = extractImageNames(trimmed)
                 val msg = if (imageList.isEmpty()) "Sebutkan nama gambar (contoh: foto1.jpg, foto2.jpg)." 
@@ -162,7 +155,6 @@ class ActionRouter(context: Context) {
                 RouterResponse(msg)
             }
 
-            // PENCARIAN BERKAS (Mendukung Waktu, Ekstensi, Ukuran, Folder)
             lower.startsWith("cari") || lower.startsWith("temukan") || lower.startsWith("lihat file") -> {
                 var minMb: Double? = null
                 var maxMb: Double? = null
@@ -298,7 +290,6 @@ class ActionRouter(context: Context) {
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
 
-            // MENANGANI SHARE TEXT KE WHATSAPP DENGAN RESOLUSI KONTAK LOKAL
             "share_text", "share_wa" -> {
                 val text = action.text ?: action.content ?: ""
                 val target = action.target_app ?: "whatsapp"
@@ -307,7 +298,13 @@ class ActionRouter(context: Context) {
                 RouterResponse(result)
             }
 
-            "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
+            // BERBAGI BERKAS DENGAN RESOLUSI DARI MEMORI PENCARIAN TERAKHIR
+            "share_file" -> {
+                val target = action.file_path ?: action.file_name ?: ""
+                val resolvedPath = fileTools.resolveFilePath(target)
+                RouterResponse(shareBridgeTool.shareFileToApp(resolvedPath, action.target_app ?: "whatsapp"))
+            }
+
             "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
 
             else -> RouterResponse("Aksi '${action.action}' tidak dikenali oleh sistem TOWR.")
