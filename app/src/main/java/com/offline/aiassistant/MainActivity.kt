@@ -157,7 +157,6 @@ fun TowrMainScreen() {
                         isGemmaReady = true
                         val fileName = File(detectedPath).name
                         modelStatusLabel = "Gemma Aktif: $fileName"
-                        Toast.makeText(context, "Model aktif dari Documents!", Toast.LENGTH_SHORT).show()
                     } else {
                         modelStatusLabel = "Gagal memuat model"
                         Toast.makeText(context, loadMsg, Toast.LENGTH_LONG).show()
@@ -169,7 +168,6 @@ fun TowrMainScreen() {
         }
     }
 
-    // Resolusi jalur file fisik dari URI hasil pilihan dokumen
     fun resolvePathFromUri(uri: Uri): String? {
         try {
             val root = Environment.getExternalStorageDirectory() ?: return null
@@ -184,10 +182,10 @@ fun TowrMainScreen() {
 
             if (decoded.contains("raw:")) {
                 val raw = decoded.substringAfter("raw:")
-                if (File(raw).exists()) return raw
+                val target = File(raw)
+                if (target.exists()) return target.absolutePath
             }
 
-            // Cek nama file langsung di folder Documents dan Download
             val fileName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: ""
             if (fileName.isNotBlank()) {
                 val fDoc = File(root, "Documents/$fileName")
@@ -263,6 +261,8 @@ fun TowrMainScreen() {
 
                         if (aiResponse.contains("\"action\"")) {
                             val routerRes = actionRouter.processInstruction(aiResponse)
+                            // Catat ke memori konteks
+                            gemmaEngine.addTurn(trimmed, routerRes.message)
                             Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
                         } else if (lowerTrimmed.startsWith("cari") || 
                                    lowerTrimmed.startsWith("buka") || 
@@ -273,8 +273,11 @@ fun TowrMainScreen() {
                                    lowerTrimmed.contains("wa") ||
                                    lowerTrimmed.contains("whatsapp")) {
                             val routerRes = actionRouter.processInstruction(trimmed)
+                            gemmaEngine.addTurn(trimmed, routerRes.message)
                             Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
                         } else {
+                            // Percakapan umum: simpan ke memori multi-turn
+                            gemmaEngine.addTurn(trimmed, aiResponse)
                             Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
                         }
                     } else {
@@ -346,7 +349,8 @@ fun TowrMainScreen() {
                 onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
                 onClearChatClicked = {
                     messages.clear()
-                    Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
+                    gemmaEngine.clearHistory() // Bersihkan juga memori percakapan Gemma
+                    Toast.makeText(context, "Riwayat pesan & memori obrolan dibersihkan.", Toast.LENGTH_SHORT).show()
                 }
             )
 
@@ -357,7 +361,8 @@ fun TowrMainScreen() {
                         "INPUT_BUKA" -> inputPrompt = "buka aplikasi "
                         "CLEAR_CHAT" -> {
                             messages.clear()
-                            Toast.makeText(context, "Pesan telah dibersihkan.", Toast.LENGTH_SHORT).show()
+                            gemmaEngine.clearHistory()
+                            Toast.makeText(context, "Pesan & memori dibersihkan.", Toast.LENGTH_SHORT).show()
                         }
                         else -> sendInstruction(chipAction)
                     }
