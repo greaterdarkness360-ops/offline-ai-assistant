@@ -133,22 +133,19 @@ fun TowrMainScreen() {
     var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
     var isGemmaReady by remember { mutableStateOf(false) }
 
-    // Launcher izin baca kontak perangkat (Fase 5)
     val contactPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (!isGranted) {
-            Toast.makeText(context, "Izin kontak tidak aktif. Kontak harus dipilih manual di WhatsApp.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Izin kontak tidak aktif. Kontak dipilih manual di WhatsApp.", Toast.LENGTH_SHORT).show()
         }
     }
 
     LaunchedEffect(Unit) {
-        // Minta izin baca kontak jika belum aktif
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             contactPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
         }
 
-        // Cari dan muat model Gemma otomatis
         withContext(Dispatchers.IO) {
             val detectedPath = gemmaEngine.findModelPath()
             if (detectedPath != null) {
@@ -171,13 +168,13 @@ fun TowrMainScreen() {
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            val fileName = uri.lastPathSegment?.substringAfterLast('/') ?: "Model Terpilih"
-            modelStatusLabel = "Memuat $fileName..."
+            modelStatusLabel = "Memuat model..."
             coroutineScope.launch(Dispatchers.IO) {
-                val detected = gemmaEngine.findModelPath() ?: "/storage/emulated/0/Download/$fileName"
-                gemmaEngine.loadModel(detected)
+                val detected = gemmaEngine.findModelPath() ?: "/storage/emulated/0/Download/gemma-4-E2B-it-gpu.litertlm"
+                val result = gemmaEngine.loadModel(detected)
                 isGemmaReady = gemmaEngine.isModelLoaded
-                modelStatusLabel = if (isGemmaReady) "Gemma Aktif: $fileName" else "Gagal memuat $fileName"
+                val name = File(detected).name
+                modelStatusLabel = if (isGemmaReady) "Gemma Aktif: $name" else "Gagal memuat $name"
             }
         }
     }
@@ -218,7 +215,6 @@ fun TowrMainScreen() {
                         val lowerTrimmed = trimmed.lowercase()
 
                         if (aiResponse.contains("\"action\"")) {
-                            // 1. Gemma menghasilkan JSON aksi
                             val routerRes = actionRouter.processInstruction(aiResponse)
                             Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
                         } else if (lowerTrimmed.startsWith("cari") || 
@@ -229,11 +225,9 @@ fun TowrMainScreen() {
                                    lowerTrimmed.startsWith("kirim") ||
                                    lowerTrimmed.contains("wa") ||
                                    lowerTrimmed.contains("whatsapp")) {
-                            // 2. HYBRID GUARD: Jika Gemma membalas teks basa-basi padahal ini instruksi perangkat, langsung eksekusi secara native!
                             val routerRes = actionRouter.processInstruction(trimmed)
                             Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
                         } else {
-                            // 3. Obrolan umum bebas dari Gemma
                             Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
                         }
                     } else {
@@ -280,19 +274,9 @@ fun TowrMainScreen() {
         }
     }
 
+    // Scaffold dengan layout terkunci rapat tanpa celah kosong
     Scaffold(
         containerColor = TowrBgDark,
-        topBar = {
-            TowrTopBar(
-                modelStatus = modelStatusLabel,
-                isReady = isGemmaReady,
-                onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
-                onClearChatClicked = {
-                    messages.clear()
-                    Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
-                }
-            )
-        },
         bottomBar = {
             TowrInputBar(
                 inputPrompt = inputPrompt,
@@ -308,61 +292,74 @@ fun TowrMainScreen() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(bottom = innerPadding.calculateBottomPadding())
         ) {
+            // 1. Header Terkunci Rapat di Puncak Layar
+            TowrTopBar(
+                modelStatus = modelStatusLabel,
+                isReady = isGemmaReady,
+                onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
+                onClearChatClicked = {
+                    messages.clear()
+                    Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
+                }
+            )
+
+            // 2. Baris Tombol Cepat Tepat di Bawah Header
             QuickActionChipsRow(
                 onChipClicked = { chipAction ->
                     when (chipAction) {
-                        "INPUT_CARI" -> {
-                            inputPrompt = "cari file "
-                        }
-                        "INPUT_BUKA" -> {
-                            inputPrompt = "buka aplikasi "
-                        }
+                        "INPUT_CARI" -> inputPrompt = "cari file "
+                        "INPUT_BUKA" -> inputPrompt = "buka aplikasi "
                         "CLEAR_CHAT" -> {
                             messages.clear()
                             Toast.makeText(context, "Pesan telah dibersihkan.", Toast.LENGTH_SHORT).show()
                         }
-                        else -> {
-                            sendInstruction(chipAction)
-                        }
+                        else -> sendInstruction(chipAction)
                     }
                 }
             )
 
-            if (messages.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "TOWR Agent AI siap menerima perintah.\nGunakan tombol cepat di atas atau ketik instruksi Anda.",
-                        color = TowrTextSecondary,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    items(messages, key = { it.id }) { msg ->
-                        if (msg.sender == MessageSender.USER) {
-                            UserChatBubble(message = msg)
-                        } else {
-                            TowrAgentBubble(
-                                message = msg,
-                                onFileClick = { file ->
-                                    openFileWithSystemApp(context, file.filePath)
-                                }
-                            )
+            // 3. Area Chat Fleksibel Mengisi Sisa Layar
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (messages.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "TOWR Agent AI siap menerima perintah.\nGunakan tombol cepat di atas atau ketik instruksi Anda.",
+                            color = TowrTextSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        items(messages, key = { it.id }) { msg ->
+                            if (msg.sender == MessageSender.USER) {
+                                UserChatBubble(message = msg)
+                            } else {
+                                TowrAgentBubble(
+                                    message = msg,
+                                    onFileClick = { file ->
+                                        openFileWithSystemApp(context, file.filePath)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -371,6 +368,9 @@ fun TowrMainScreen() {
     }
 }
 
+// =========================================================================
+// HEADER TERKUNCI (COMPACT & TIDAK BISA MELOROT)
+// =========================================================================
 @Composable
 fun TowrTopBar(
     modelStatus: String,
@@ -382,37 +382,47 @@ fun TowrTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(TowrBgDark)
-            .padding(horizontal = 16.dp, vertical = 10.dp)
+            .statusBarsPadding() // Langsung menempel rapi di bawah bilah status HP
+            .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Sisi Kiri: Ikon T + Judul + Status Model (Lebar Fleksibel)
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(9.dp))
                         .background(TowrSurfaceElevated)
-                        .border(1.5.dp, TowrElectricCyan, RoundedCornerShape(10.dp)),
+                        .border(1.5.dp, TowrElectricCyan, RoundedCornerShape(9.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("T", color = TowrElectricCyan, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    Text("T", color = TowrElectricCyan, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
                 Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Column(modifier = Modifier.weight(1f, fill = false)) {
+                    Text(
+                        "TOWR AGENT AI", 
+                        color = TowrTextPrimary, 
+                        fontSize = 15.sp, 
+                        fontWeight = FontWeight.Bold
+                    )
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
                             .clickable { onSelectModelClicked() }
-                            .padding(vertical = 2.dp),
+                            .padding(vertical = 1.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = modelStatus,
-                            color = if (isReady) TowrEmeraldGreen else TowrSkyBlue,
+                            color = if (isReady) TowrEmeraldGreen else if (modelStatus.startsWith("Gagal")) Color(0xFFEF4444) else TowrSkyBlue,
                             fontSize = 11.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -423,9 +433,12 @@ fun TowrTopBar(
                 }
             }
 
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Sisi Kanan: Tombol Hapus + Badge 100% OFFLINE (Terkunci Rapi)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onClearChatClicked, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(19.dp))
+                IconButton(onClick = onClearChatClicked, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(18.dp))
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 Row(
@@ -442,7 +455,7 @@ fun TowrTopBar(
                 }
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         Divider(color = TowrBorderDim.copy(alpha = 0.5f), thickness = 1.dp)
     }
 }
