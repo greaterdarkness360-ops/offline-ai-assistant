@@ -20,7 +20,9 @@ class GemmaEngine(private val context: Context) {
     var loadedModelPath: String? = null
         private set
 
-    // Prompt sistem terstruktur untuk memaksa Gemma memanggil alat (Tool Calling)
+    var errorMessage: String? = null
+        private set
+
     private val systemPrompt = """
         Kamu adalah TOWR, asisten AI pribadi on-device pintar di Android buatan Natanael.
         Kamu MEMILIKI AKSES PENUH ke alat perangkat melalui format JSON.
@@ -38,24 +40,36 @@ class GemmaEngine(private val context: Context) {
         2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
     """.trimIndent()
 
-    // Mendeteksi otomatis file model di memori internal ponsel
+    // Mendeteksi otomatis file model .litertlm di Download atau Documents
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
-        val candidates = listOf(
+
+        val directCandidates = listOf(
             File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Download/gemma-4-e2b-it-gpu.litertlm"),
             File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
+            File(root, "Documents/gemma-4-e2b-it-gpu.litertlm"),
             File(root, "gemma-4-E2B-it-gpu.litertlm")
         )
-        for (file in candidates) {
+        for (file in directCandidates) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
+        // Cari file .litertlm apa saja di folder Download
         val downloadDir = File(root, "Download")
-        if (downloadDir.exists()) {
-            val found = downloadDir.listFiles { f -> 
+        if (downloadDir.exists() && downloadDir.canRead()) {
+            val found = downloadDir.walkTopDown().maxDepth(2).firstOrNull { f -> 
                 f.isFile && f.name.endsWith(".litertlm", ignoreCase = true) 
-            }?.firstOrNull()
+            }
+            if (found != null) return found.absolutePath
+        }
+
+        // Cari di folder Documents
+        val docDir = File(root, "Documents")
+        if (docDir.exists() && docDir.canRead()) {
+            val found = docDir.walkTopDown().maxDepth(2).firstOrNull { f -> 
+                f.isFile && f.name.endsWith(".litertlm", ignoreCase = true) 
+            }
             if (found != null) return found.absolutePath
         }
 
@@ -66,35 +80,43 @@ class GemmaEngine(private val context: Context) {
         val file = File(modelPath)
         if (!file.exists()) {
             isModelLoaded = false
-            return@withContext "File model tidak ditemukan: $modelPath"
+            errorMessage = "File model tidak ditemukan di: $modelPath"
+            return@withContext errorMessage!!
         }
+
+        // PENTING: Bebaskan memori GPU dari instance sebelumnya agar tidak Out of Memory
+        release()
 
         try {
             val gpuConfig = EngineConfig(
-                modelPath = modelPath,
+                modelPath = file.absolutePath,
                 backend = Backend.GPU()
             )
             val newEngine = Engine(gpuConfig)
             newEngine.initialize()
             engine = newEngine
             isModelLoaded = true
-            loadedModelPath = modelPath
+            loadedModelPath = file.absolutePath
+            errorMessage = null
             "Model Gemma On-Device (.litertlm) berhasil aktif via GPU HP!"
         } catch (eGpu: Exception) {
             try {
+                // Fallback ke CPU jika GPU kehabisan VRAM
                 val cpuConfig = EngineConfig(
-                    modelPath = modelPath,
+                    modelPath = file.absolutePath,
                     backend = Backend.CPU()
                 )
                 val fallbackEngine = Engine(cpuConfig)
                 fallbackEngine.initialize()
                 engine = fallbackEngine
                 isModelLoaded = true
-                loadedModelPath = modelPath
+                loadedModelPath = file.absolutePath
+                errorMessage = null
                 "Model Gemma On-Device aktif via CPU mode!"
             } catch (eCpu: Exception) {
                 isModelLoaded = false
-                "Gagal memuat model: ${eCpu.localizedMessage ?: eGpu.localizedMessage}"
+                errorMessage = "Gagal memuat model: ${eGpu.localizedMessage ?: eCpu.localizedMessage}"
+                errorMessage!!
             }
         }
     }
@@ -117,5 +139,13 @@ class GemmaEngine(private val context: Context) {
         } catch (e: Exception) {
             "Kendala komputasi AI: ${e.localizedMessage}"
         }
+    }
+
+    fun release() {
+        try {
+            engine?.close()
+        } catch (ignored: Exception) {}
+        engine = null
+        isModelLoaded = false
     }
 }
