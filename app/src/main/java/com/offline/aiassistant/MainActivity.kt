@@ -150,17 +150,21 @@ fun TowrMainScreen() {
         withContext(Dispatchers.IO) {
             val detectedPath = gemmaEngine.findModelPath()
             if (detectedPath != null) {
-                modelStatusLabel = "Memuat ke GPU..."
+                withContext(Dispatchers.Main) { modelStatusLabel = "Memuat ke GPU..." }
                 val loadMsg = gemmaEngine.loadModel(detectedPath)
-                if (gemmaEngine.isModelLoaded) {
-                    isGemmaReady = true
-                    val fileName = File(detectedPath).name
-                    modelStatusLabel = "Gemma Aktif: $fileName"
-                } else {
-                    modelStatusLabel = "Gagal memuat model"
+                withContext(Dispatchers.Main) {
+                    if (gemmaEngine.isModelLoaded) {
+                        isGemmaReady = true
+                        val fileName = File(detectedPath).name
+                        modelStatusLabel = "Gemma Aktif: $fileName"
+                        Toast.makeText(context, "Model aktif dari Documents!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        modelStatusLabel = "Gagal memuat model"
+                        Toast.makeText(context, loadMsg, Toast.LENGTH_LONG).show()
+                    }
                 }
             } else {
-                modelStatusLabel = "Kaitkan Model Gemma"
+                withContext(Dispatchers.Main) { modelStatusLabel = "Kaitkan Model Gemma" }
             }
         }
     }
@@ -168,29 +172,28 @@ fun TowrMainScreen() {
     // Resolusi jalur file fisik dari URI hasil pilihan dokumen
     fun resolvePathFromUri(uri: Uri): String? {
         try {
-            val path = uri.path ?: return null
             val root = Environment.getExternalStorageDirectory() ?: return null
-
-            if (path.contains("raw:")) {
-                val raw = path.substringAfter("raw:")
-                if (File(raw).exists()) return raw
-            }
-
-            if (path.contains("primary:")) {
-                val rel = path.substringAfter("primary:")
-                val target = File(root, rel)
-                if (target.exists()) return target.absolutePath
-            }
-
+            val path = uri.path ?: return null
             val decoded = Uri.decode(path)
+
             if (decoded.contains("primary:")) {
                 val rel = decoded.substringAfter("primary:")
                 val target = File(root, rel)
                 if (target.exists()) return target.absolutePath
             }
+
             if (decoded.contains("raw:")) {
                 val raw = decoded.substringAfter("raw:")
                 if (File(raw).exists()) return raw
+            }
+
+            // Cek nama file langsung di folder Documents dan Download
+            val fileName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: ""
+            if (fileName.isNotBlank()) {
+                val fDoc = File(root, "Documents/$fileName")
+                if (fDoc.exists()) return fDoc.absolutePath
+                val fDown = File(root, "Download/$fileName")
+                if (fDown.exists()) return fDown.absolutePath
             }
         } catch (e: Exception) {}
         return null
@@ -202,7 +205,6 @@ fun TowrMainScreen() {
         if (uri != null) {
             modelStatusLabel = "Memuat model..."
             coroutineScope.launch(Dispatchers.IO) {
-                // Cari jalur fisik dari URI atau gunakan auto-detect
                 val exactPath = resolvePathFromUri(uri) 
                     ?: gemmaEngine.findModelPath() 
                     ?: "/storage/emulated/0/Documents/gemma-4-E2B-it-gpu.litertlm"
@@ -217,7 +219,7 @@ fun TowrMainScreen() {
                         Toast.makeText(context, "Model aktif: $name", Toast.LENGTH_SHORT).show()
                     } else {
                         modelStatusLabel = "Gagal memuat $name"
-                        Toast.makeText(context, gemmaEngine.errorMessage ?: "Gagal memuat model", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, gemmaEngine.errorMessage ?: result, Toast.LENGTH_LONG).show()
                     }
                 }
             }
