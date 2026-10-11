@@ -40,36 +40,35 @@ class GemmaEngine(private val context: Context) {
         2. Jika pengguna mengobrol biasa (sains, definisi, salam, santai), jawab langsung secara ramah dan ringkas dalam Bahasa Indonesia tanpa JSON.
     """.trimIndent()
 
-    // Mendeteksi otomatis file model .litertlm di Download atau Documents
+    // Mendeteksi otomatis file model .litertlm di Dokumen, Documents, Download, dan subfoldernya
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
 
-        val directCandidates = listOf(
-            File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
-            File(root, "Download/gemma-4-e2b-it-gpu.litertlm"),
+        // 1. Cek langsung di lokasi-lokasi favorit
+        val candidates = listOf(
             File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
-            File(root, "Documents/gemma-4-e2b-it-gpu.litertlm"),
+            File(root, "Dokumen/gemma-4-E2B-it-gpu.litertlm"),
+            File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "gemma-4-E2B-it-gpu.litertlm")
         )
-        for (file in directCandidates) {
+        for (file in candidates) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
-        // Cari file .litertlm apa saja di folder Download
-        val downloadDir = File(root, "Download")
-        if (downloadDir.exists() && downloadDir.canRead()) {
-            val found = downloadDir.walkTopDown().maxDepth(2).firstOrNull { f -> 
-                f.isFile && f.name.endsWith(".litertlm", ignoreCase = true) 
-            }
-            if (found != null) return found.absolutePath
-        }
+        // 2. Telusuri folder Dokumen / Documents hingga kedalaman 3 subfolder
+        val docDirs = listOf(
+            File(root, "Documents"),
+            File(root, "Dokumen"),
+            File(root, "Download")
+        ).filter { it.exists() && it.canRead() }
 
-        // Cari di folder Documents
-        val docDir = File(root, "Documents")
-        if (docDir.exists() && docDir.canRead()) {
-            val found = docDir.walkTopDown().maxDepth(2).firstOrNull { f -> 
-                f.isFile && f.name.endsWith(".litertlm", ignoreCase = true) 
-            }
+        for (dir in docDirs) {
+            val found = dir.walkTopDown()
+                .maxDepth(3)
+                .filter { !it.name.startsWith(".") }
+                .firstOrNull { f -> 
+                    f.isFile && (f.name.endsWith(".litertlm", ignoreCase = true) || f.name.endsWith(".bin", ignoreCase = true)) 
+                }
             if (found != null) return found.absolutePath
         }
 
@@ -80,11 +79,11 @@ class GemmaEngine(private val context: Context) {
         val file = File(modelPath)
         if (!file.exists()) {
             isModelLoaded = false
-            errorMessage = "File model tidak ditemukan di: $modelPath"
+            errorMessage = "File tidak ditemukan di: $modelPath"
             return@withContext errorMessage!!
         }
 
-        // PENTING: Bebaskan memori GPU dari instance sebelumnya agar tidak Out of Memory
+        // Bebaskan instansiasi lama dari memori GPU
         release()
 
         try {
@@ -101,7 +100,6 @@ class GemmaEngine(private val context: Context) {
             "Model Gemma On-Device (.litertlm) berhasil aktif via GPU HP!"
         } catch (eGpu: Exception) {
             try {
-                // Fallback ke CPU jika GPU kehabisan VRAM
                 val cpuConfig = EngineConfig(
                     modelPath = file.absolutePath,
                     backend = Backend.CPU()
@@ -115,7 +113,7 @@ class GemmaEngine(private val context: Context) {
                 "Model Gemma On-Device aktif via CPU mode!"
             } catch (eCpu: Exception) {
                 isModelLoaded = false
-                errorMessage = "Gagal memuat model: ${eGpu.localizedMessage ?: eCpu.localizedMessage}"
+                errorMessage = eGpu.localizedMessage ?: eCpu.localizedMessage ?: "Gagal inisialisasi engine"
                 errorMessage!!
             }
         }
