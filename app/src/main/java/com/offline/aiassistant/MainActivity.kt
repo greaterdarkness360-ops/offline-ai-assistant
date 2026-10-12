@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.offline.aiassistant.ai.GeminiCloudEngine
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +67,8 @@ val TowrElectricCyan = Color(0xFF00E5FF)
 val TowrSkyBlue = Color(0xFF38BDF8)
 val TowrEmeraldGreen = Color(0xFF10B981)
 val TowrGreenBg = Color(0xFF022C22)
+val TowrAmberWarning = Color(0xFFF59E0B)
+val TowrAmberBg = Color(0xFF451A03)
 val TowrTextPrimary = Color(0xFFF8FAFC)
 val TowrTextSecondary = Color(0xFF94A3B8)
 
@@ -130,6 +133,11 @@ fun TowrMainScreen() {
 
     val actionRouter = remember { ActionRouter(context) }
     val gemmaEngine = remember { GemmaEngine(context) }
+    val geminiCloudEngine = remember { GeminiCloudEngine(context) }
+
+    var isHybridMode by remember { mutableStateOf(false) } // Sakelar Offline vs Hybrid
+    var showApiKeyDialog by remember { mutableStateOf(false) }
+    var apiKeyInput by remember { mutableStateOf(geminiCloudEngine.apiKey) }
 
     var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
     var isGemmaReady by remember { mutableStateOf(false) }
@@ -159,7 +167,6 @@ fun TowrMainScreen() {
                         modelStatusLabel = "Gemma Aktif: $fileName"
                     } else {
                         modelStatusLabel = "Gagal memuat model"
-                        Toast.makeText(context, loadMsg, Toast.LENGTH_LONG).show()
                     }
                 }
             } else {
@@ -179,7 +186,6 @@ fun TowrMainScreen() {
                 val target = File(root, rel)
                 if (target.exists()) return target.absolutePath
             }
-
             if (decoded.contains("raw:")) {
                 val raw = decoded.substringAfter("raw:")
                 val target = File(raw)
@@ -224,6 +230,57 @@ fun TowrMainScreen() {
         }
     }
 
+    // Dialog Pengisian Gemini API Key
+    if (showApiKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showApiKeyDialog = false },
+            containerColor = TowrSurfaceElevated,
+            title = { Text("Konfigurasi Gemini Flash API", color = TowrElectricCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "Masukkan API Key dari Google AI Studio (aistudio.google.com). 100% Gratis untuk pemakaian pribadi.",
+                        color = TowrTextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = { apiKeyInput = it },
+                        placeholder = { Text("AIzaSy...", color = TowrTextSecondary, fontSize = 12.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = TowrElectricCyan,
+                            unfocusedBorderColor = TowrBorderDim,
+                            focusedTextColor = TowrTextPrimary,
+                            unfocusedTextColor = TowrTextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        geminiCloudEngine.apiKey = apiKeyInput.trim()
+                        geminiCloudEngine.resetModel()
+                        showApiKeyDialog = false
+                        isHybridMode = geminiCloudEngine.apiKey.isNotBlank()
+                        Toast.makeText(context, if (isHybridMode) "Mode Hybrid Aktif!" else "API Key dikosongkan.", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TowrElectricCyan)
+                ) {
+                    Text("Simpan", color = TowrBgDark, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showApiKeyDialog = false }) {
+                    Text("Batal", color = TowrTextSecondary)
+                }
+            }
+        )
+    }
+
     val messages = remember { mutableStateListOf<TowrChatMessage>() }
 
     val sendInstruction: (String) -> Unit = { rawText ->
@@ -255,34 +312,25 @@ fun TowrMainScreen() {
 
                 val startTime = System.currentTimeMillis()
                 val (finalMessage, files, toolName) = withContext(Dispatchers.IO) {
-                    if (gemmaEngine.isModelLoaded) {
-                        val aiResponse = gemmaEngine.askGemma(trimmed)
-                        val lowerTrimmed = trimmed.lowercase()
+                    val lowerTrimmed = trimmed.lowercase()
 
-                        if (aiResponse.contains("\"action\"")) {
-                            val routerRes = actionRouter.processInstruction(aiResponse)
-                            // Catat ke memori konteks
-                            gemmaEngine.addTurn(trimmed, routerRes.message)
-                            Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
-                        } else if (lowerTrimmed.startsWith("cari") || 
-                                   lowerTrimmed.startsWith("buka") || 
-                                   lowerTrimmed.startsWith("luncurkan") || 
-                                   lowerTrimmed.startsWith("hapus") || 
-                                   lowerTrimmed.startsWith("bersihkan") || 
-                                   lowerTrimmed.startsWith("kirim") ||
-                                   lowerTrimmed.contains("wa") ||
-                                   lowerTrimmed.contains("whatsapp")) {
-                            val routerRes = actionRouter.processInstruction(trimmed)
-                            gemmaEngine.addTurn(trimmed, routerRes.message)
-                            Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
+                    // JALUR 1: MODE HYBRID AKTIF & HP ONLINE
+                    if (isHybridMode && geminiCloudEngine.isOnline() && geminiCloudEngine.apiKey.isNotBlank()) {
+                        val cloudResponse = geminiCloudEngine.askGemini(trimmed)
+                        if (cloudResponse != "OFFLINE_FALLBACK" && !cloudResponse.startsWith("Gagal komputasi Cloud")) {
+                            if (cloudResponse.contains("\"action\"")) {
+                                val routerRes = actionRouter.processInstruction(cloudResponse)
+                                Triple(routerRes.message, routerRes.files, "Gemini Flash (Cloud) + Tools")
+                            } else {
+                                Triple(cloudResponse, emptyList(), "Gemini 1.5 Flash (Cloud)")
+                            }
                         } else {
-                            // Percakapan umum: simpan ke memori multi-turn
-                            gemmaEngine.addTurn(trimmed, aiResponse)
-                            Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
+                            // Fallback jika cloud gagal: gunakan Gemma lokal
+                            processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
                         }
                     } else {
-                        val routerRes = actionRouter.processInstruction(trimmed)
-                        Triple(routerRes.message, routerRes.files, "ActionRouter Native Engine")
+                        // JALUR 2: MODE 100% OFFLINE (GEMMA LOKAL)
+                        processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
                     }
                 }
                 val latency = System.currentTimeMillis() - startTime
@@ -346,11 +394,21 @@ fun TowrMainScreen() {
             TowrTopBar(
                 modelStatus = modelStatusLabel,
                 isReady = isGemmaReady,
+                isHybrid = isHybridMode,
                 onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
+                onToggleHybridClicked = {
+                    if (geminiCloudEngine.apiKey.isBlank()) {
+                        showApiKeyDialog = true
+                    } else {
+                        isHybridMode = !isHybridMode
+                        val status = if (isHybridMode) "Mode Hybrid (Gemini Flash) Aktif" else "Mode 100% Offline (Gemma 2B) Aktif"
+                        Toast.makeText(context, status, Toast.LENGTH_SHORT).show()
+                    }
+                },
                 onClearChatClicked = {
                     messages.clear()
-                    gemmaEngine.clearHistory() // Bersihkan juga memori percakapan Gemma
-                    Toast.makeText(context, "Riwayat pesan & memori obrolan dibersihkan.", Toast.LENGTH_SHORT).show()
+                    gemmaEngine.clearHistory()
+                    Toast.makeText(context, "Riwayat pesan dibersihkan.", Toast.LENGTH_SHORT).show()
                 }
             )
 
@@ -362,7 +420,7 @@ fun TowrMainScreen() {
                         "CLEAR_CHAT" -> {
                             messages.clear()
                             gemmaEngine.clearHistory()
-                            Toast.makeText(context, "Pesan & memori dibersihkan.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Pesan dibersihkan.", Toast.LENGTH_SHORT).show()
                         }
                         else -> sendInstruction(chipAction)
                     }
@@ -416,11 +474,50 @@ fun TowrMainScreen() {
     }
 }
 
+// Fungsi bantu eksekusi lokal dengan Gemma Engine
+suspend fun processWithLocalGemma(
+    trimmed: String,
+    lowerTrimmed: String,
+    gemmaEngine: GemmaEngine,
+    actionRouter: ActionRouter
+): Triple<String, List<FileItemInfo>, String> {
+    return if (gemmaEngine.isModelLoaded) {
+        val aiResponse = gemmaEngine.askGemma(trimmed)
+        if (aiResponse.contains("\"action\"")) {
+            val routerRes = actionRouter.processInstruction(aiResponse)
+            gemmaEngine.addTurn(trimmed, routerRes.message)
+            Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
+        } else if (lowerTrimmed.startsWith("cari") || 
+                   lowerTrimmed.startsWith("buka") || 
+                   lowerTrimmed.startsWith("luncurkan") || 
+                   lowerTrimmed.startsWith("hapus") || 
+                   lowerTrimmed.startsWith("bersihkan") || 
+                   lowerTrimmed.startsWith("kirim") ||
+                   lowerTrimmed.contains("wa") ||
+                   lowerTrimmed.contains("whatsapp")) {
+            val routerRes = actionRouter.processInstruction(trimmed)
+            gemmaEngine.addTurn(trimmed, routerRes.message)
+            Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
+        } else {
+            gemmaEngine.addTurn(trimmed, aiResponse)
+            Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
+        }
+    } else {
+        val routerRes = actionRouter.processInstruction(trimmed)
+        Triple(routerRes.message, routerRes.files, "ActionRouter Native Engine")
+    }
+}
+
+// =========================================================================
+// HEADER TERKUNCI (DENGAN SAKELAR HYBRID INTERAKTIF)
+// =========================================================================
 @Composable
 fun TowrTopBar(
     modelStatus: String,
     isReady: Boolean,
+    isHybrid: Boolean,
     onSelectModelClicked: () -> Unit,
+    onToggleHybridClicked: () -> Unit,
     onClearChatClicked: () -> Unit
 ) {
     Column(
@@ -451,12 +548,7 @@ fun TowrTopBar(
                 }
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f, fill = false)) {
-                    Text(
-                        "TOWR AGENT AI", 
-                        color = TowrTextPrimary, 
-                        fontSize = 15.sp, 
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("TOWR AGENT AI", color = TowrTextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
@@ -484,17 +576,30 @@ fun TowrTopBar(
                     Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(18.dp))
                 }
                 Spacer(modifier = Modifier.width(4.dp))
+
+                // BADGE HYBRID INTERAKTIF (Bisa diketuk untuk beralih mode)
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(TowrGreenBg)
-                        .border(1.dp, TowrEmeraldGreen, RoundedCornerShape(8.dp))
+                        .background(if (isHybrid) TowrAmberBg else TowrGreenBg)
+                        .border(1.dp, if (isHybrid) TowrAmberWarning else TowrEmeraldGreen, RoundedCornerShape(8.dp))
+                        .clickable { onToggleHybridClicked() }
                         .padding(horizontal = 7.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(TowrEmeraldGreen))
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (isHybrid) TowrAmberWarning else TowrEmeraldGreen)
+                    )
                     Spacer(modifier = Modifier.width(5.dp))
-                    Text("100% OFFLINE", color = TowrEmeraldGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (isHybrid) "⚡ HYBRID" else "100% OFFLINE",
+                        color = if (isHybrid) TowrAmberWarning else TowrEmeraldGreen,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
