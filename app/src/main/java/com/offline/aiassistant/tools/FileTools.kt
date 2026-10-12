@@ -1,15 +1,17 @@
 package com.offline.aiassistant.tools
 
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
-import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.lowagie.text.Document
+import com.lowagie.text.Image
+import com.lowagie.text.pdf.PdfWriter
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -36,26 +38,127 @@ typealias FileSearchResult = FileItemInfo
 class FileTools(private val context: Context) {
 
     companion object {
-        // Menyimpan daftar file dari hasil pencarian terakhir di RAM (untuk rujukan nomor urut)
-        private val activeSearchResults = mutableListOf<File>()
+        // Memori statis hasil pencarian terakhir untuk rujukan "file pertama", "file kedua", dll.
+        val lastSearchResults = mutableListOf<FileItemInfo>()
     }
 
     /**
-     * PENCARIAN BERKAS SUPER CEPAT MENGGUNAKAN ANDROID MEDIASTORE API
-     * Kecepatan: 10 - 30 milidetik (Bypass disk scan)
+     * Pencarian Hybrid Super Cepat:
+     * 1. Query MediaStore API (Index SQLite instan)
+     * 2. Direct Scan folder pengguna (Download, Documents, WhatsApp, dsb) tanpa menyentuh folder /Android/
      */
     fun searchFilesAdvanced(
         query: String = "",
         minSizeMb: Double? = null,
         maxSizeMb: Double? = null,
-        sortBy: String? = null,
-        maxAgeHours: Long? = null,
-        extensions: List<String> = emptyList(),
-        specificFolder: String? = null
+        sortBy: String? = null
     ): List<FileItemInfo> {
-        activeSearchResults.clear()
-        val results = mutableListOf<FileItemInfo>()
+        val cleanQuery = query.trim()
+        val foundMap = mutableMapOf<String, FileItemInfo>()
 
+        // 1. Jalur MediaStore API
+        try {
+            queryMediaStore(cleanQuery, foundMap)
+        } catch (_: Exception) {}
+
+        // 2. Jalur Direct Scan Folder Dokumen Pengguna (Menjamin file skripsi/non-media pasti ketemu)
+        try {
+            scanUserDocumentFolders(cleanQuery, foundMap)
+        } catch (_: Exception) {}
+
+        var filteredList = foundMap.values.toList()
+
+        // Filter ukuran jika ada
+        if (minSizeMb != null) {
+            val minBytes = (minSizeMb * 1024 * 1024).toLong()
+            filteredList = filteredList.filter { it.sizeBytes >= minBytes }
+        }
+        if (maxSizeMb != null) {
+            val maxBytes = (maxSizeMb * 1024 * 1024).toLong()
+            filteredList = filteredList.filter { it.sizeBytes <= maxBytes }
+        }
+
+        // Pengurutan
+        filteredList = when (sortBy?.lowercase()) {
+            "largest" -> filteredList.sortedByDescending { it.sizeBytes }
+            "oldest" -> filteredList.sortedBy { it.lastModifiedTimestamp }
+            else -> filteredList.sortedByDescending { it.lastModifiedTimestamp } // Default: terbaru
+        }
+
+        // Simpan ke memori aktif untuk resolusi perintah berikutnya
+        lastSearchResults.clear()
+        lastSearchResults.addAll(filteredList)
+
+        return filteredList
+    }
+
+    fun searchFiles(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
+    fun searchLocal(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
+
+    /**
+     * Resolusi cerdas untuk perintah seperti:
+     * "file kedua", "yang ke-2", "nomor 1", "terakhir", atau nama file spesifik.
+     */
+    fun resolveTargetFile(reference: String): FileItemInfo? {
+        val clean = reference.trim().lowercase()
+
+        // 1. Cek apakah merujuk ke nomor urutan hasil pencarian di layar
+        val targetIndex: Int? = when {
+            clean.contains("pertama") || clean.contains("kesatu") || clean == "1" || clean.contains("ke-1") || clean.contains("ke 1") || clean.contains("nomor 1") || clean.contains("no 1") -> 0
+            clean.contains("kedua") || clean == "2" || clean.contains("ke-2") || clean.contains("ke 2") || clean.contains("nomor 2") || clean.contains("no 2") -> 1
+            clean.contains("ketiga") || clean == "3" || clean.contains("ke-3") || clean.contains("ke 3") || clean.contains("nomor 3") || clean.contains("no 3") -> 2
+            clean.contains("keempat") || clean == "4" || clean.contains("ke-4") || clean.contains("ke 4") || clean.contains("nomor 4") || clean.contains("no 4") -> 3
+            clean.contains("kelima") || clean == "5" || clean.contains("ke-5") || clean.contains("ke 5") || clean.contains("nomor 5") || clean.contains("no 5") -> 4
+            clean.contains("terakhir") -> if (lastSearchResults.isNotEmpty()) lastSearchResults.lastIndex else null
+            else -> {
+                val numMatch = Regex("(?:file|nomor|no|ke)?\\s*(\\d+)").find(clean)
+                val num = numMatch?.groupValues?.get(1)?.toIntOrNull()
+                if (num != null && num > 0) num - 1 else null
+            }
+        }
+
+        if (targetIndex != null && targetIndex in lastSearchResults.indices) {
+            return lastSearchResults[targetIndex]
+        }
+
+        // 2. Cek kecocokan nama dalam hasil pencarian terakhir
+        val matchedInRecent = lastSearchResults.firstOrNull {
+            it.name.contains(clean, ignoreCase = true) || clean.contains(it.name.substringBeforeLast(".").lowercase())
+        }
+        if (matchedInRecent != null) return matchedInRecent
+
+        // 3. Jika belum ketemu, lakukan pencarian langsung di penyimpanan
+        val directSearch = searchFilesAdvanced(clean)
+        return directSearch.firstOrNull()
+    }
+
+    /**
+     * Eksekusi penghapusan fisik berkas secara aman
+     */
+    fun deletePhysicalFile(filePath: String): String {
+        return try {
+            val file = File(filePath)
+            if (!file.exists()) {
+                return "Berkas tidak ditemukan di penyimpanan: ${file.name}"
+            }
+            if (file.delete()) {
+                // Hapus dari memori hasil pencarian aktif
+                lastSearchResults.removeAll { it.path == filePath }
+                "Berkas '${file.name}' berhasil dihapus secara permanen."
+            } else {
+                "Gagal menghapus berkas '${file.name}'. Pastikan izin penyimpanan aktif."
+            }
+        } catch (e: Exception) {
+            "Terjadi kendala saat menghapus berkas: ${e.localizedMessage}"
+        }
+    }
+
+    fun deleteFileByName(nameOrOrdinal: String): String {
+        val target = resolveTargetFile(nameOrOrdinal) ?: return "Berkas '$nameOrOrdinal' tidak ditemukan untuk dihapus."
+        return deletePhysicalFile(target.path)
+    }
+
+    private fun queryMediaStore(query: String, outputMap: MutableMap<String, FileItemInfo>) {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -70,314 +173,186 @@ class FileTools(private val context: Context) {
             MediaStore.Files.FileColumns.DATE_MODIFIED
         )
 
-        val selectionClauses = mutableListOf<String>()
-        val selectionArgs = mutableListOf<String>()
+        val selection = if (query.isNotBlank()) {
+            "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? COLLATE NOCASE"
+        } else null
+        val selectionArgs = if (query.isNotBlank()) arrayOf("%$query%") else null
 
-        // 1. Filter Nama Berkas (Multi-kata kunci fleksibel)
-        if (query.isNotBlank()) {
-            val keywords = query.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
-            for (kw in keywords) {
-                selectionClauses.add("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?")
-                selectionArgs.add("%$kw%")
-            }
-        }
+        val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
 
-        // 2. Filter Ukuran Berkas
-        minSizeMb?.let {
-            val bytes = (it * 1024 * 1024).toLong()
-            selectionClauses.add("${MediaStore.Files.FileColumns.SIZE} >= ?")
-            selectionArgs.add(bytes.toString())
-        }
-        maxSizeMb?.let {
-            val bytes = (it * 1024 * 1024).toLong()
-            selectionClauses.add("${MediaStore.Files.FileColumns.SIZE} <= ?")
-            selectionArgs.add(bytes.toString())
-        }
+        context.contentResolver.query(collection, projection, selection, selectionArgs, sortOrder)?.use { cursor ->
+            val nameCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
+            val dataCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+            val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+            val dateCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
 
-        // 3. Filter Rentang Waktu (DATE_MODIFIED di MediaStore dihitung dalam satuan DETIK)
-        maxAgeHours?.let {
-            val minTimeSec = (System.currentTimeMillis() - (it * 3600 * 1000L)) / 1000L
-            selectionClauses.add("${MediaStore.Files.FileColumns.DATE_MODIFIED} >= ?")
-            selectionArgs.add(minTimeSec.toString())
-        }
+            while (cursor.moveToNext()) {
+                val path = if (dataCol != -1) cursor.getString(dataCol) ?: "" else ""
+                val name = if (nameCol != -1) cursor.getString(nameCol) ?: File(path).name else File(path).name
+                val sizeBytes = if (sizeCol != -1) cursor.getLong(sizeCol) else 0L
+                val dateSec = if (dateCol != -1) cursor.getLong(dateCol) else 0L
+                val dateMs = dateSec * 1000L
 
-        // 4. Filter Ekstensi
-        if (extensions.isNotEmpty()) {
-            val extClauses = extensions.map {
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?"
-            }
-            selectionClauses.add("(${extClauses.joinToString(" OR ")})")
-            for (ext in extensions) {
-                val cleanExt = ext.lowercase().trim().removePrefix(".")
-                selectionArgs.add("%.$cleanExt")
-            }
-        }
-
-        // 5. Filter Folder Tertentu
-        if (!specificFolder.isNullOrBlank()) {
-            selectionClauses.add("${MediaStore.Files.FileColumns.DATA} LIKE ?")
-            selectionArgs.add("%/$specificFolder/%")
-        }
-
-        // Lewati file kosong 0 B dan file cache tersembunyi
-        selectionClauses.add("${MediaStore.Files.FileColumns.SIZE} > 0")
-        selectionClauses.add("${MediaStore.Files.FileColumns.DISPLAY_NAME} NOT LIKE '.%'")
-
-        // 6. Pengurutan Kueri (Sort Order)
-        val sortOrder = when (sortBy?.lowercase()) {
-            "oldest" -> "${MediaStore.Files.FileColumns.DATE_MODIFIED} ASC"
-            "newest" -> "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
-            "largest" -> "${MediaStore.Files.FileColumns.SIZE} DESC"
-            else -> "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
-        }
-
-        try {
-            val cursor = context.contentResolver.query(
-                collection,
-                projection,
-                if (selectionClauses.isNotEmpty()) selectionClauses.joinToString(" AND ") else null,
-                if (selectionArgs.isNotEmpty()) selectionArgs.toTypedArray() else null,
-                "$sortOrder LIMIT 100"
-            )
-
-            cursor?.use {
-                val nameCol = it.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                val pathCol = it.getColumnIndex(MediaStore.Files.FileColumns.DATA)
-                val sizeCol = it.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
-                val dateCol = it.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
-
-                while (it.moveToNext()) {
-                    val name = if (nameCol != -1) it.getString(nameCol) ?: "" else ""
-                    val path = if (pathCol != -1) it.getString(pathCol) ?: "" else ""
-                    val sizeBytes = if (sizeCol != -1) it.getLong(sizeCol) else 0L
-                    val dateSec = if (dateCol != -1) it.getLong(dateCol) else 0L
-                    val dateMs = dateSec * 1000L
-                    val ext = name.substringAfterLast('.', "").uppercase()
-
-                    if (name.isBlank() || path.isBlank()) continue
-
-                    val f = File(path)
-                    if (f.exists()) {
-                        activeSearchResults.add(f)
-                    }
-
-                    results.add(
-                        FileItemInfo(
-                            name = name,
-                            path = path,
-                            size = formatFileSize(sizeBytes),
-                            lastModified = formatDate(dateMs),
-                            extension = ext,
-                            sizeBytes = sizeBytes,
-                            lastModifiedTimestamp = dateMs
-                        )
+                if (path.isNotBlank() && !path.contains("/Android/")) {
+                    val file = File(path)
+                    val ext = file.extension.uppercase()
+                    outputMap[path] = FileItemInfo(
+                        name = name,
+                        path = path,
+                        size = formatFileSize(sizeBytes),
+                        lastModified = formatDate(dateMs),
+                        extension = ext,
+                        sizeBytes = sizeBytes,
+                        lastModifiedTimestamp = dateMs
                     )
                 }
             }
-        } catch (e: Exception) {
-            // Fallback cadangan jika MediaStore mengalami kendala sistem
-            return searchFilesFallbackDisk(query, specificFolder)
         }
-
-        return results.take(60)
     }
 
-    // Cadangan darurat pemindaian disk jika kueri MediaStore kosong atau error
-    private fun searchFilesFallbackDisk(query: String, folder: String?): List<FileItemInfo> {
-        val root = Environment.getExternalStorageDirectory() ?: return emptyList()
-        val target = if (!folder.isNullOrBlank()) File(root, folder) else File(root, "Documents")
-        if (!target.exists()) return emptyList()
+    private fun scanUserDocumentFolders(query: String, outputMap: MutableMap<String, FileItemInfo>) {
+        val storageRoot = Environment.getExternalStorageDirectory() ?: return
+        val targetFolders = listOf(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+            File(storageRoot, "WhatsApp/Media/WhatsApp Documents"),
+            File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents")
+        )
 
-        return target.walkTopDown().maxDepth(2).filter { 
-            it.isFile && !it.name.startsWith(".") && it.name.contains(query, ignoreCase = true) 
-        }.map {
-            FileItemInfo(
-                name = it.name,
-                path = it.absolutePath,
-                size = formatFileSize(it.length()),
-                lastModified = formatDate(it.lastModified()),
-                extension = it.extension.uppercase(),
-                sizeBytes = it.length(),
-                lastModifiedTimestamp = it.lastModified()
-            )
-        }.take(30).toList()
-    }
-
-    /**
-     * Menerjemahkan rujukan berkas (misal: "nomor 2", "blue soap") dari hasil pencarian terakhir
-     */
-    fun resolveFilePath(identifier: String): String {
-        val clean = identifier.trim().lowercase()
-        val numMatch = Regex("\\d+").find(clean)
-        val num = numMatch?.value?.toIntOrNull()
-
-        if (num != null && num in 1..activeSearchResults.size) {
-            return activeSearchResults[num - 1].absolutePath
+        for (folder in targetFolders) {
+            if (folder.exists() && folder.canRead()) {
+                scanFolderRecursively(folder, query, outputMap, depth = 0)
+            }
         }
 
-        val matchedInActive = activeSearchResults.firstOrNull { 
-            it.name.contains(clean, ignoreCase = true) 
+        // Pindai juga folder-folder buatan pengguna di root internal storage (lewatkan folder Android dan hidden)
+        storageRoot.listFiles()?.forEach { rootChild ->
+            if (rootChild.isDirectory && !rootChild.name.startsWith(".") && rootChild.name != "Android") {
+                scanFolderRecursively(rootChild, query, outputMap, depth = 0)
+            }
         }
-        if (matchedInActive != null) return matchedInActive.absolutePath
-
-        val directFile = File(identifier)
-        if (directFile.exists()) return directFile.absolutePath
-
-        val found = searchFilesAdvanced(query = clean)
-        if (found.isNotEmpty()) return found.first().path
-
-        return identifier
     }
 
-    /**
-     * Deteksi berkas duplikat super cepat via MediaStore
-     */
-    fun getDuplicateFilesList(folderName: String? = null): List<FileItemInfo> {
-        val allFiles = searchFilesAdvanced(specificFolder = folderName)
-        val grouped = allFiles.groupBy { "${it.name.lowercase()}_${it.sizeBytes}" }
+    private fun scanFolderRecursively(dir: File, query: String, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
+        if (depth > 3) return // Batasi kedalaman agar selalu cepat (sub-50ms)
+        val files = dir.listFiles() ?: return
+
+        for (file in files) {
+            if (file.isDirectory) {
+                if (!file.name.startsWith(".") && file.name != "Android") {
+                    scanFolderRecursively(file, query, outputMap, depth + 1)
+                }
+            } else {
+                if (query.isBlank() || file.name.contains(query, ignoreCase = true)) {
+                    val path = file.absolutePath
+                    if (!outputMap.containsKey(path)) {
+                        outputMap[path] = FileItemInfo(
+                            name = file.name,
+                            path = path,
+                            size = formatFileSize(file.length()),
+                            lastModified = formatDate(file.lastModified()),
+                            extension = file.extension.uppercase(),
+                            sizeBytes = file.length(),
+                            lastModifiedTimestamp = file.lastModified()
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String {
+        val targetDir = File(Environment.getExternalStorageDirectory(), folderName)
+        if (!targetDir.exists() || !targetDir.isDirectory) {
+            return "Folder $folderName tidak ditemukan di penyimpanan."
+        }
+
+        val fileList = targetDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val nameSizeMap = mutableMapOf<String, File>()
+        val duplicates = mutableListOf<File>()
+
+        for (file in fileList) {
+            val key = "${file.name.lowercase()}_${file.length()}"
+            if (nameSizeMap.containsKey(key)) {
+                duplicates.add(file)
+            } else {
+                nameSizeMap[key] = file
+            }
+        }
+
+        if (duplicates.isEmpty()) {
+            return "Tidak ditemukan berkas duplikat di folder $folderName."
+        }
+
+        if (deleteDuplicates) {
+            var count = 0
+            duplicates.forEach { if (it.delete()) count++ }
+            return "Berhasil menghapus $count berkas duplikat dari folder $folderName."
+        }
+
+        return "Ditemukan ${duplicates.size} berkas duplikat di folder $folderName."
+    }
+
+    fun getDuplicateFilesList(folderName: String = "Download"): List<FileItemInfo> {
+        val targetDir = File(Environment.getExternalStorageDirectory(), folderName)
+        if (!targetDir.exists() || !targetDir.isDirectory) return emptyList()
+
+        val fileList = targetDir.listFiles()?.filter { it.isFile } ?: emptyList()
+        val nameSizeMap = mutableMapOf<String, File>()
         val duplicates = mutableListOf<FileItemInfo>()
 
-        for ((_, fileList) in grouped) {
-            if (fileList.size > 1) {
-                duplicates.addAll(fileList.drop(1))
+        for (file in fileList) {
+            val key = "${file.name.lowercase()}_${file.length()}"
+            if (nameSizeMap.containsKey(key)) {
+                duplicates.add(
+                    FileItemInfo(
+                        name = file.name,
+                        path = file.absolutePath,
+                        size = formatFileSize(file.length()),
+                        lastModified = formatDate(file.lastModified()),
+                        extension = file.extension.uppercase(),
+                        sizeBytes = file.length(),
+                        lastModifiedTimestamp = file.lastModified()
+                    )
+                )
+            } else {
+                nameSizeMap[key] = file
             }
         }
-        return duplicates.take(50)
+        return duplicates
     }
 
-    fun cleanDuplicateFiles(folderName: String? = null, deleteDuplicates: Boolean = false): String {
-        val duplicates = getDuplicateFilesList(folderName)
-        if (duplicates.isEmpty()) {
-            return "Tidak ditemukan berkas duplikat di penyimpanan Anda."
-        }
-
-        return if (deleteDuplicates) {
-            var deletedCount = 0
-            for (item in duplicates) {
-                val f = File(item.path)
-                if (f.exists() && f.delete()) deletedCount++
-            }
-            "Berhasil membersihkan $deletedCount berkas duplikat."
-        } else {
-            "Ditemukan ${duplicates.size} berkas duplikat yang siap dibersihkan."
-        }
-    }
-
-    fun deleteFileByName(targetName: String): String {
-        if (targetName.isBlank()) return "Nama berkas tidak boleh kosong."
-
-        val found = searchFilesAdvanced(query = targetName)
-        if (found.isEmpty()) return "Tidak ditemukan berkas dengan kata kunci '$targetName'."
-
-        var deletedCount = 0
-        for (item in found) {
-            val f = File(item.path)
-            if (f.exists() && f.delete()) {
-                deletedCount++
-            }
-        }
-
-        return if (deletedCount > 0) {
-            "Berhasil menghapus $deletedCount berkas terkait '$targetName'."
-        } else {
-            "Gagal menghapus berkas '$targetName'."
-        }
-    }
-
-    fun convertImagesToPdf(imageNames: List<String>, outputPdfName: String = "Dokumen_TOWR.pdf"): String {
-        if (imageNames.isEmpty()) return "Pilih nama gambar yang ingin diubah ke PDF."
-        val root = Environment.getExternalStorageDirectory() ?: return "Penyimpanan tidak tersedia."
-
-        val allImages = mutableListOf<File>()
-        for (name in imageNames) {
-            val found = searchFilesAdvanced(query = name, extensions = listOf("jpg", "jpeg", "png", "webp"))
-            for (item in found) {
-                val f = File(item.path)
-                if (f.exists()) allImages.add(f)
-            }
-        }
-
-        if (allImages.isEmpty()) return "Berkas gambar tidak ditemukan di memori."
-
-        val pdfDocument = PdfDocument()
-        try {
-            var pageIndex = 1
-            for (imageFile in allImages.distinctBy { it.absolutePath }) {
-                val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath) ?: continue
-                val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, pageIndex++).create()
-                val page = pdfDocument.startPage(pageInfo)
-                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
-                pdfDocument.finishPage(page)
-                bitmap.recycle()
-            }
-
-            val outputFile = File(File(root, "Documents").apply { mkdirs() }, outputPdfName)
-            FileOutputStream(outputFile).use { out -> pdfDocument.writeTo(out) }
-            return "Berhasil membuat PDF: ${outputFile.name} di folder Documents."
-        } catch (e: Exception) {
-            return "Gagal membuat PDF: ${e.localizedMessage}"
-        } finally {
-            pdfDocument.close()
-        }
-    }
-
-    fun deleteFilesExcept(keepIndex: Int): String {
-        if (activeSearchResults.isEmpty()) return "Tidak ada daftar berkas aktif dari pencarian sebelumnya."
-        val zeroIndex = keepIndex - 1
-        if (zeroIndex !in activeSearchResults.indices) return "Nomor urut $keepIndex tidak ditemukan."
-
-        var deletedCount = 0
-        val keptFile = activeSearchResults[zeroIndex]
-        val filesToDelete = activeSearchResults.filterIndexed { index, _ -> index != zeroIndex }
-
-        for (file in filesToDelete) {
-            if (file.exists() && file.delete()) deletedCount++
-        }
-
-        activeSearchResults.clear()
-        activeSearchResults.add(keptFile)
-        return "Berhasil menghapus $deletedCount berkas. Berkas nomor $keepIndex ('${keptFile.name}') tetap aman."
-    }
-
-    fun shareFileToWhatsApp(filePath: String): Boolean {
+    fun convertImagesToPdf(imageNames: List<String>, outputPdfName: String): String {
         return try {
-            val file = File(filePath)
-            if (!file.exists()) {
-                Toast.makeText(context, "Berkas tidak ditemukan: $filePath", Toast.LENGTH_SHORT).show()
-                return false
+            val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val validImageFiles = mutableListOf<File>()
+
+            for (name in imageNames) {
+                val f = File(downloadDir, name)
+                if (f.exists() && f.isFile) validImageFiles.add(f)
             }
 
-            val uri: Uri = FileProvider.getUriForFile(
-                context,
-                "com.offline.aiassistant.provider",
-                file
-            )
-
-            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = when (file.extension.lowercase()) {
-                    "pdf" -> "application/pdf"
-                    "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    "jpg", "jpeg", "png" -> "image/*"
-                    else -> "*/*"
-                }
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                setPackage("com.whatsapp")
+            if (validImageFiles.isEmpty()) {
+                return "Tidak ada berkas gambar yang ditemukan di folder Download."
             }
 
-            try {
-                shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(shareIntent)
-                true
-            } catch (e: Exception) {
-                val chooser = Intent.createChooser(shareIntent.apply { setPackage(null) }, "Bagikan berkas via...")
-                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(chooser)
-                true
+            val outputFile = File(downloadDir, outputPdfName)
+            val document = Document()
+            PdfWriter.getInstance(document, FileOutputStream(outputFile))
+            document.open()
+
+            for (imgFile in validImageFiles) {
+                val image = Image.getInstance(imgFile.absolutePath)
+                image.scaleToFit(document.pageSize.width - 50, document.pageSize.height - 50)
+                image.alignment = Image.MIDDLE
+                document.add(image)
+                document.newPage()
             }
+            document.close()
+            "Berhasil menggabungkan ${validImageFiles.size} gambar menjadi PDF: ${outputFile.name}"
         } catch (e: Exception) {
-            Toast.makeText(context, "Gagal membagikan berkas: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-            false
+            "Gagal membuat PDF: ${e.localizedMessage}"
         }
     }
 
