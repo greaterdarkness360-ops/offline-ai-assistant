@@ -231,12 +231,11 @@ fun TowrMainScreen() {
         }
     }
 
-    // DIALOG PENGATURAN LENGKAP (SETTINGS SCREEN)
     if (showSettingsDialog) {
         var apiKeyText by remember { mutableStateOf(geminiCloudEngine.apiKey) }
         var n8nWebhookText by remember { mutableStateOf(prefs.getString("n8n_webhook_url", "") ?: "") }
         var turnsSlider by remember { mutableFloatStateOf(gemmaEngine.maxHistoryTurns.toFloat()) }
-        var tempSlider by remember { mutableFloatStateOf(gemmaEngine.temperature) }
+        var tempSlider by remember { mutableFloatStateOf(gemmaEngine.temperature.toFloat()) }
 
         AlertDialog(
             onDismissRequest = { showSettingsDialog = false },
@@ -255,7 +254,6 @@ fun TowrMainScreen() {
                         .padding(vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // 1. Konfigurasi Gemini API
                     Column {
                         Text("Gemini Flash API Key (Cloud Hybrid)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(4.dp))
@@ -274,7 +272,6 @@ fun TowrMainScreen() {
                         )
                     }
 
-                    // 2. Konfigurasi n8n Webhook
                     Column {
                         Text("n8n Webhook URL (Pemantau Email)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                         Spacer(modifier = Modifier.height(4.dp))
@@ -293,7 +290,6 @@ fun TowrMainScreen() {
                         )
                     }
 
-                    // 3. Batas Memori Percakapan Gemma
                     Column {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Batas Memori Obrolan", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -308,7 +304,6 @@ fun TowrMainScreen() {
                         )
                     }
 
-                    // 4. Suhu / Kreativitas Gemma
                     Column {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Suhu Inferensi (Temperature)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -323,7 +318,6 @@ fun TowrMainScreen() {
                         )
                     }
 
-                    // 5. Tombol Pilih Ulang Model
                     OutlinedButton(
                         onClick = {
                             showSettingsDialog = false
@@ -346,7 +340,7 @@ fun TowrMainScreen() {
                         geminiCloudEngine.resetModel()
                         prefs.edit().putString("n8n_webhook_url", n8nWebhookText.trim()).apply()
                         gemmaEngine.maxHistoryTurns = turnsSlider.toInt()
-                        gemmaEngine.temperature = tempSlider
+                        gemmaEngine.temperature = tempSlider.toDouble()
                         showSettingsDialog = false
                         Toast.makeText(context, "Pengaturan berhasil disimpan.", Toast.LENGTH_SHORT).show()
                     },
@@ -649,19 +643,16 @@ fun TowrTopBar(
             Spacer(modifier = Modifier.width(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // TOMBOL PENGATURAN (SETTINGS)
                 IconButton(onClick = onSettingsClicked, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Settings, contentDescription = "Pengaturan", tint = TowrSkyBlue, modifier = Modifier.size(18.dp))
                 }
                 Spacer(modifier = Modifier.width(2.dp))
 
-                // TOMBOL BERSIHKAN PESAN
                 IconButton(onClick = onClearChatClicked, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(18.dp))
                 }
                 Spacer(modifier = Modifier.width(4.dp))
 
-                // BADGE HYBRID INTERAKTIF
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
