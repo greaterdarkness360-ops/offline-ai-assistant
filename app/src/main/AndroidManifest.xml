@@ -11,11 +11,14 @@
         android:name="android.permission.PACKAGE_USAGE_STATS" 
         tools:ignore="ProtectedPermissions" />
 
-    <!-- IZIN BACA BUKU KONTAK LOKAL (FASE 5) -->
+    <!-- Izin Baca Kontak Lokal -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
+    <!-- Izin Internet Khusus Mode Hybrid Cloud (Gemini Flash) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <queries>
-        <!-- Paket Aplikasi Chat -->
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
         <package android:name="org.telegram.messenger" />
@@ -42,7 +45,6 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
-        <!-- Akselerasi Grafis GPU Khusus LiteRT-LM On-Device -->
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
 
