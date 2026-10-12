@@ -10,6 +10,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.File
+
+@Serializable
+data class PendingDeleteAction(
+    val actionType: String,
+    val filePaths: List<String>,
+    val fileNames: List<String>
+)
 
 @Serializable
 data class AgentAction(
@@ -35,7 +43,9 @@ data class AgentAction(
 
 data class RouterResponse(
     val message: String,
-    val files: List<FileItemInfo> = emptyList()
+    val files: List<FileItemInfo> = emptyList(),
+    val isPendingConfirmation: Boolean = false,
+    val pendingAction: PendingDeleteAction? = null
 )
 
 class ActionRouter(context: Context) {
@@ -66,6 +76,7 @@ class ActionRouter(context: Context) {
         val lower = trimmed.lowercase()
 
         when {
+            // HAPUS SEMUA KECUALI NOMOR X (GUARDRAIL)
             lower.contains("kecuali nomor") || lower.contains("kecuali no") -> {
                 val numMatch = Regex("\\d+").find(lower)
                 if (numMatch != null) {
@@ -76,10 +87,25 @@ class ActionRouter(context: Context) {
                 }
             }
 
+            // HAPUS BERKAS / BERSIHKAN DUPLIKAT (GUARDRAIL AKTIF)
             lower.startsWith("hapus file") || lower.startsWith("hapus") || lower.startsWith("bersihkan") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("double")) {
-                    val msg = fileTools.cleanDuplicateFiles(deleteDuplicates = true)
-                    RouterResponse(msg)
+                    val duplicates = fileTools.getDuplicateFilesList()
+                    if (duplicates.isEmpty()) {
+                        RouterResponse("Tidak ditemukan file duplikat di penyimpanan Anda.")
+                    } else {
+                        val pending = PendingDeleteAction(
+                            actionType = "CLEAN_DUPLICATES",
+                            filePaths = duplicates.map { it.path },
+                            fileNames = duplicates.map { it.name }
+                        )
+                        RouterResponse(
+                            message = "⚠️ KONFIRMASI DIPERLUKAN: TOWR menemukan ${duplicates.size} berkas duplikat yang siap dihapus permanen. Apakah Anda yakin?",
+                            files = duplicates,
+                            isPendingConfirmation = true,
+                            pendingAction = pending
+                        )
+                    }
                 } else {
                     val targetName = trimmed
                         .replace(Regex("(?i)^(hapus file|hapus|bersihkan)\\s*"), "")
@@ -89,11 +115,27 @@ class ActionRouter(context: Context) {
                     if (targetName.isBlank()) {
                         RouterResponse("Sebutkan nama file yang ingin dihapus.")
                     } else {
-                        RouterResponse(fileTools.deleteFileByName(targetName))
+                        val matched = fileTools.searchFilesAdvanced(query = targetName)
+                        if (matched.isEmpty()) {
+                            RouterResponse("Tidak ditemukan berkas dengan kata kunci '$targetName'.")
+                        } else {
+                            val pending = PendingDeleteAction(
+                                actionType = "DELETE_BY_NAME",
+                                filePaths = matched.map { it.path },
+                                fileNames = matched.map { it.name }
+                            )
+                            RouterResponse(
+                                message = "⚠️ KONFIRMASI DIPERLUKAN: TOWR akan menghapus ${matched.size} berkas terkait '$targetName' secara permanen. Apakah Anda yakin?",
+                                files = matched,
+                                isPendingConfirmation = true,
+                                pendingAction = pending
+                            )
+                        }
                     }
                 }
             }
 
+            // CEK FILE DUPLIKAT
             lower.contains("file ganda") || lower.contains("duplikat") || lower.contains("file double") -> {
                 val list = fileTools.getDuplicateFilesList()
                 if (list.isEmpty()) {
@@ -103,6 +145,7 @@ class ActionRouter(context: Context) {
                 }
             }
 
+            // BUKA / LUNCURKAN APLIKASI
             lower.startsWith("buka") || lower.startsWith("luncurkan") || lower.contains("buka aplikasi") || lower.contains("luncurkan aplikasi") -> {
                 val appName = trimmed
                     .replace(Regex("(?i)^(buka aplikasi|buka|luncurkan aplikasi|luncurkan)\\s*"), "")
@@ -111,10 +154,12 @@ class ActionRouter(context: Context) {
                 RouterResponse(msg)
             }
 
+            // CEK AKTIVITAS & PENGGUNAAN
             lower.contains("aktivitas") || lower.contains("latar belakang") || lower.contains("pemakaian") -> {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
+            // KIRIM PESAN KE WHATSAPP DENGAN RESOLUSI KONTAK LOKAL
             lower.startsWith("kirim") && (lower.contains("wa") || lower.contains("whatsapp")) -> {
                 val match = Regex("(?i)^kirim\\s+(.+?)\\s+ke\\s+(.+?)(?:\\s+(?:di|lewat|via)?\\s*(?:wa|whatsapp))?$").find(trimmed)
                 if (match != null) {
@@ -148,6 +193,7 @@ class ActionRouter(context: Context) {
                 RouterResponse(shareBridgeTool.saveNoteForNotion("Catatan_TOWR", noteContent))
             }
 
+            // GABUNG GAMBAR KE PDF
             lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
                 val imageList = extractImageNames(trimmed)
                 val msg = if (imageList.isEmpty()) "Sebutkan nama gambar (contoh: foto1.jpg, foto2.jpg)." 
@@ -155,6 +201,7 @@ class ActionRouter(context: Context) {
                 RouterResponse(msg)
             }
 
+            // PENCARIAN BERKAS (MediaStore Cepat)
             lower.startsWith("cari") || lower.startsWith("temukan") || lower.startsWith("lihat file") -> {
                 var minMb: Double? = null
                 var maxMb: Double? = null
@@ -240,7 +287,44 @@ class ActionRouter(context: Context) {
 
     private suspend fun executeJsonAction(action: AgentAction): RouterResponse {
         return when (action.action.lowercase()) {
-            "delete_file" -> RouterResponse(fileTools.deleteFileByName(action.file_name ?: action.query ?: ""))
+            "delete_file" -> {
+                val target = action.file_name ?: action.query ?: ""
+                val matched = fileTools.searchFilesAdvanced(query = target)
+                if (matched.isEmpty()) {
+                    RouterResponse("Tidak ditemukan berkas '$target' untuk dihapus.")
+                } else {
+                    val pending = PendingDeleteAction(
+                        actionType = "DELETE_BY_NAME",
+                        filePaths = matched.map { it.path },
+                        fileNames = matched.map { it.name }
+                    )
+                    RouterResponse(
+                        message = "⚠️ KONFIRMASI: Ingin menghapus ${matched.size} berkas terkait '$target' secara permanen?",
+                        files = matched,
+                        isPendingConfirmation = true,
+                        pendingAction = pending
+                    )
+                }
+            }
+
+            "clean_duplicates" -> {
+                val duplicates = fileTools.getDuplicateFilesList(action.folder)
+                if (duplicates.isEmpty()) {
+                    RouterResponse("Tidak ditemukan berkas duplikat.")
+                } else {
+                    val pending = PendingDeleteAction(
+                        actionType = "CLEAN_DUPLICATES",
+                        filePaths = duplicates.map { it.path },
+                        fileNames = duplicates.map { it.name }
+                    )
+                    RouterResponse(
+                        message = "⚠️ KONFIRMASI: Ingin membersihkan ${duplicates.size} berkas duplikat secara permanen?",
+                        files = duplicates,
+                        isPendingConfirmation = true,
+                        pendingAction = pending
+                    )
+                }
+            }
             
             "search_files" -> {
                 val rawQuery = (action.query ?: action.file_name ?: "").trim()
@@ -277,15 +361,6 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            "clean_duplicates" -> {
-                if (action.delete_duplicates == true) {
-                    RouterResponse(fileTools.cleanDuplicateFiles(action.folder, deleteDuplicates = true))
-                } else {
-                    val list = fileTools.getDuplicateFilesList(action.folder)
-                    RouterResponse("Ditemukan ${list.size} file ganda:", list)
-                }
-            }
-
             "images_to_pdf" -> RouterResponse(fileTools.convertImagesToPdf(action.images ?: emptyList(), action.output_pdf ?: "TOWR_Result.pdf"))
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
@@ -298,7 +373,6 @@ class ActionRouter(context: Context) {
                 RouterResponse(result)
             }
 
-            // BERBAGI BERKAS DENGAN RESOLUSI DARI MEMORI PENCARIAN TERAKHIR
             "share_file" -> {
                 val target = action.file_path ?: action.file_name ?: ""
                 val resolvedPath = fileTools.resolveFilePath(target)
@@ -309,6 +383,31 @@ class ActionRouter(context: Context) {
 
             else -> RouterResponse("Aksi '${action.action}' tidak dikenali oleh sistem TOWR.")
         }
+    }
+
+    /**
+     * EKSEKUSI PENGHAPUSAN SETELAH PENGGUNA MENEKAN TOMBOL KONFIRMASI
+     */
+    suspend fun executeConfirmedDelete(pending: PendingDeleteAction): RouterResponse = withContext(Dispatchers.IO) {
+        var deletedCount = 0
+        var failedCount = 0
+
+        for (path in pending.filePaths) {
+            val file = File(path)
+            if (file.exists() && file.delete()) {
+                deletedCount++
+            } else {
+                failedCount++
+            }
+        }
+
+        val msg = if (failedCount == 0) {
+            "✅ Berhasil menghapus $deletedCount berkas secara aman."
+        } else {
+            "Berhasil menghapus $deletedCount berkas, $failedCount berkas gagal dihapus."
+        }
+
+        RouterResponse(message = msg)
     }
 
     private fun extractImageNames(text: String): List<String> {
