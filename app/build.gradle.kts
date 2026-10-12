@@ -75,7 +75,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // Google AI Edge On-Device
+    // Google AI Edge On-Device (Gemma 2B)
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.13.1")
     implementation("com.google.mediapipe:tasks-genai:0.10.20")
+
+    // Google AI Cloud (Gemini Flash Hybrid)
+    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 }
