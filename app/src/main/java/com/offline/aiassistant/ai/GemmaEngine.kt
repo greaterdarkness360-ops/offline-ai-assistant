@@ -11,10 +11,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
-// Model penyimpanan satu putaran percakapan
 data class ChatTurn(val userPrompt: String, val aiResponse: String)
 
 class GemmaEngine(private val context: Context) {
+
+    private val prefs = context.getSharedPreferences("towr_prefs", Context.MODE_PRIVATE)
 
     private var engine: Engine? = null
     var isModelLoaded: Boolean = false
@@ -26,7 +27,16 @@ class GemmaEngine(private val context: Context) {
     var errorMessage: String? = null
         private set
 
-    // Buffer berjalan: Menyimpan hingga 4 putaran percakapan terakhir
+    // Batas putaran memori obrolan (default: 4 putaran)
+    var maxHistoryTurns: Int
+        get() = prefs.getInt("max_history_turns", 4)
+        set(value) = prefs.edit().putInt("max_history_turns", value).apply()
+
+    // Suhu kreativitas model (default: 0.8)
+    var temperature: Float
+        get() = prefs.getFloat("gemma_temperature", 0.8f)
+        set(value) = prefs.edit().putFloat("gemma_temperature", value).apply()
+
     private val conversationHistory = mutableListOf<ChatTurn>()
 
     private val systemPrompt = """
@@ -50,14 +60,14 @@ class GemmaEngine(private val context: Context) {
     fun findModelPath(): String? {
         val root = Environment.getExternalStorageDirectory() ?: return null
 
-        val candidates = listOf(
+        val directCandidates = listOf(
             File(root, "Documents/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Documents/gemma-4-e2b-it-gpu.litertlm"),
             File(root, "Dokumen/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "Download/gemma-4-E2B-it-gpu.litertlm"),
             File(root, "gemma-4-E2B-it-gpu.litertlm")
         )
-        for (file in candidates) {
+        for (file in directCandidates) {
             if (file.exists() && file.canRead()) return file.absolutePath
         }
 
@@ -123,18 +133,15 @@ class GemmaEngine(private val context: Context) {
         }
     }
 
-    // Membangun prompt gabungan yang menyertakan riwayat percakapan sebelumnya
     private fun constructPromptWithHistory(currentPrompt: String): String {
         val sb = StringBuilder()
         sb.append("<start_of_turn>system\n").append(systemPrompt).append("<end_of_turn>\n")
 
-        // Sisipkan riwayat putaran obrolan sebelumnya
         for (turn in conversationHistory) {
             sb.append("<start_of_turn>user\n").append(turn.userPrompt).append("<end_of_turn>\n")
             sb.append("<start_of_turn>model\n").append(turn.aiResponse).append("<end_of_turn>\n")
         }
 
-        // Sisipkan instruksi user saat ini
         sb.append("<start_of_turn>user\n").append(currentPrompt).append("<end_of_turn>\n")
         sb.append("<start_of_turn>model\n")
         return sb.toString()
@@ -150,7 +157,7 @@ class GemmaEngine(private val context: Context) {
 
         try {
             val conversationConfig = ConversationConfig(
-                samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = 0.8)
+                samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = temperature)
             )
             val conversation = activeEngine.createConversation(conversationConfig)
             val response = conversation.sendMessage(fullInput)
@@ -160,17 +167,15 @@ class GemmaEngine(private val context: Context) {
         }
     }
 
-    // Menyimpan putaran percakapan ke buffer (dibatasi 4 putaran terbaru)
     fun addTurn(userPrompt: String, aiResponse: String) {
         if (userPrompt.isNotBlank() && aiResponse.isNotBlank()) {
             conversationHistory.add(ChatTurn(userPrompt, aiResponse))
-            if (conversationHistory.size > 4) {
+            if (conversationHistory.size > maxHistoryTurns) {
                 conversationHistory.removeAt(0)
             }
         }
     }
 
-    // Menghapus riwayat memori percakapan
     fun clearHistory() {
         conversationHistory.clear()
     }
