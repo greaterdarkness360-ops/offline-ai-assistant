@@ -32,10 +32,10 @@ class GemmaEngine(private val context: Context) {
         get() = prefs.getInt("max_history_turns", 4)
         set(value) = prefs.edit().putInt("max_history_turns", value).apply()
 
-    // Suhu kreativitas model (default: 0.8)
-    var temperature: Float
-        get() = prefs.getFloat("gemma_temperature", 0.8f)
-        set(value) = prefs.edit().putFloat("gemma_temperature", value).apply()
+    // Suhu kreativitas model bertipe Double sesuai spesifikasi LiteRT-LM
+    var temperature: Double
+        get() = prefs.getFloat("gemma_temperature", 0.8f).toDouble()
+        set(value) = prefs.edit().putFloat("gemma_temperature", value.toFloat()).apply()
 
     private val conversationHistory = mutableListOf<ChatTurn>()
 
@@ -156,6 +156,7 @@ class GemmaEngine(private val context: Context) {
         val fullInput = constructPromptWithHistory(prompt)
 
         try {
+            // temperature bertipe Double
             val conversationConfig = ConversationConfig(
                 samplerConfig = SamplerConfig(topK = 1, topP = 0.95, temperature = temperature)
             )
