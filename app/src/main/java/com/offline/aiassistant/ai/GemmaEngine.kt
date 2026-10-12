@@ -45,8 +45,6 @@ class GemmaEngine(private val context: Context) {
             return@withContext "File model tidak ditemukan di lokasi: $modelPath"
         }
 
-        // Release engine lama jika ada sebelum membuat baru untuk mencegah GPU OOM
-        engine?.release()
         engine = null
 
         try {
