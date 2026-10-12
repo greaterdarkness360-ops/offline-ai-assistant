@@ -50,6 +50,7 @@ import androidx.core.content.FileProvider
 import com.offline.aiassistant.ai.GeminiCloudEngine
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
+import com.offline.aiassistant.tools.FileItemInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -135,7 +136,7 @@ fun TowrMainScreen() {
     val gemmaEngine = remember { GemmaEngine(context) }
     val geminiCloudEngine = remember { GeminiCloudEngine(context) }
 
-    var isHybridMode by remember { mutableStateOf(false) } // Sakelar Offline vs Hybrid
+    var isHybridMode by remember { mutableStateOf(false) }
     var showApiKeyDialog by remember { mutableStateOf(false) }
     var apiKeyInput by remember { mutableStateOf(geminiCloudEngine.apiKey) }
 
@@ -230,7 +231,6 @@ fun TowrMainScreen() {
         }
     }
 
-    // Dialog Pengisian Gemini API Key
     if (showApiKeyDialog) {
         AlertDialog(
             onDismissRequest = { showApiKeyDialog = false },
@@ -314,7 +314,6 @@ fun TowrMainScreen() {
                 val (finalMessage, files, toolName) = withContext(Dispatchers.IO) {
                     val lowerTrimmed = trimmed.lowercase()
 
-                    // JALUR 1: MODE HYBRID AKTIF & HP ONLINE
                     if (isHybridMode && geminiCloudEngine.isOnline() && geminiCloudEngine.apiKey.isNotBlank()) {
                         val cloudResponse = geminiCloudEngine.askGemini(trimmed)
                         if (cloudResponse != "OFFLINE_FALLBACK" && !cloudResponse.startsWith("Gagal komputasi Cloud")) {
@@ -325,11 +324,9 @@ fun TowrMainScreen() {
                                 Triple(cloudResponse, emptyList(), "Gemini 1.5 Flash (Cloud)")
                             }
                         } else {
-                            // Fallback jika cloud gagal: gunakan Gemma lokal
                             processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
                         }
                     } else {
-                        // JALUR 2: MODE 100% OFFLINE (GEMMA LOKAL)
                         processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
                     }
                 }
@@ -474,7 +471,6 @@ fun TowrMainScreen() {
     }
 }
 
-// Fungsi bantu eksekusi lokal dengan Gemma Engine
 suspend fun processWithLocalGemma(
     trimmed: String,
     lowerTrimmed: String,
@@ -508,9 +504,6 @@ suspend fun processWithLocalGemma(
     }
 }
 
-// =========================================================================
-// HEADER TERKUNCI (DENGAN SAKELAR HYBRID INTERAKTIF)
-// =========================================================================
 @Composable
 fun TowrTopBar(
     modelStatus: String,
@@ -577,7 +570,6 @@ fun TowrTopBar(
                 }
                 Spacer(modifier = Modifier.width(4.dp))
 
-                // BADGE HYBRID INTERAKTIF (Bisa diketuk untuk beralih mode)
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
