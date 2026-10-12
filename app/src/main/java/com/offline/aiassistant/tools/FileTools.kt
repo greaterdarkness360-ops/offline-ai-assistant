@@ -1,17 +1,11 @@
 package com.offline.aiassistant.tools
 
-import android.content.ContentUris
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
+import android.graphics.BitmapFactory
+import android.graphics.pdf.PdfDocument
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import android.widget.Toast
-import androidx.core.content.FileProvider
-import com.lowagie.text.Document
-import com.lowagie.text.Image
-import com.lowagie.text.pdf.PdfWriter
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -82,7 +76,7 @@ class FileTools(private val context: Context) {
         filteredList = when (sortBy?.lowercase()) {
             "largest" -> filteredList.sortedByDescending { it.sizeBytes }
             "oldest" -> filteredList.sortedBy { it.lastModifiedTimestamp }
-            else -> filteredList.sortedByDescending { it.lastModifiedTimestamp } // Default: terbaru
+            else -> filteredList.sortedByDescending { it.lastModifiedTimestamp }
         }
 
         // Simpan ke memori aktif untuk resolusi perintah berikutnya
@@ -142,7 +136,6 @@ class FileTools(private val context: Context) {
                 return "Berkas tidak ditemukan di penyimpanan: ${file.name}"
             }
             if (file.delete()) {
-                // Hapus dari memori hasil pencarian aktif
                 lastSearchResults.removeAll { it.path == filePath }
                 "Berkas '${file.name}' berhasil dihapus secara permanen."
             } else {
@@ -226,7 +219,7 @@ class FileTools(private val context: Context) {
             }
         }
 
-        // Pindai juga folder-folder buatan pengguna di root internal storage (lewatkan folder Android dan hidden)
+        // Pindai folder buatan pengguna di root internal storage (lewati folder Android dan hidden)
         storageRoot.listFiles()?.forEach { rootChild ->
             if (rootChild.isDirectory && !rootChild.name.startsWith(".") && rootChild.name != "Android") {
                 scanFolderRecursively(rootChild, query, outputMap, depth = 0)
@@ -235,7 +228,7 @@ class FileTools(private val context: Context) {
     }
 
     private fun scanFolderRecursively(dir: File, query: String, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
-        if (depth > 3) return // Batasi kedalaman agar selalu cepat (sub-50ms)
+        if (depth > 3) return
         val files = dir.listFiles() ?: return
 
         for (file in files) {
@@ -323,6 +316,9 @@ class FileTools(private val context: Context) {
         return duplicates
     }
 
+    /**
+     * Konversi Gambar ke PDF menggunakan API Native Android (android.graphics.pdf.PdfDocument)
+     */
     fun convertImagesToPdf(imageNames: List<String>, outputPdfName: String): String {
         return try {
             val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -338,18 +334,21 @@ class FileTools(private val context: Context) {
             }
 
             val outputFile = File(downloadDir, outputPdfName)
-            val document = Document()
-            PdfWriter.getInstance(document, FileOutputStream(outputFile))
-            document.open()
+            val pdfDocument = PdfDocument()
 
-            for (imgFile in validImageFiles) {
-                val image = Image.getInstance(imgFile.absolutePath)
-                image.scaleToFit(document.pageSize.width - 50, document.pageSize.height - 50)
-                image.alignment = Image.MIDDLE
-                document.add(image)
-                document.newPage()
+            for ((index, imgFile) in validImageFiles.withIndex()) {
+                val bitmap = BitmapFactory.decodeFile(imgFile.absolutePath) ?: continue
+                val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, index + 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                page.canvas.drawBitmap(bitmap, 0f, 0f, null)
+                pdfDocument.finishPage(page)
+                bitmap.recycle()
             }
-            document.close()
+
+            FileOutputStream(outputFile).use { out ->
+                pdfDocument.writeTo(out)
+            }
+            pdfDocument.close()
             "Berhasil menggabungkan ${validImageFiles.size} gambar menjadi PDF: ${outputFile.name}"
         } catch (e: Exception) {
             "Gagal membuat PDF: ${e.localizedMessage}"
