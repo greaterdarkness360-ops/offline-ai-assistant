@@ -136,9 +136,9 @@ fun TowrMainScreen() {
     val gemmaEngine = remember { GemmaEngine(context) }
     val geminiCloudEngine = remember { GeminiCloudEngine(context) }
 
+    val prefs = remember { context.getSharedPreferences("towr_prefs", Context.MODE_PRIVATE) }
     var isHybridMode by remember { mutableStateOf(false) }
-    var showApiKeyDialog by remember { mutableStateOf(false) }
-    var apiKeyInput by remember { mutableStateOf(geminiCloudEngine.apiKey) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
 
     var modelStatusLabel by remember { mutableStateOf("Memeriksa Model...") }
     var isGemmaReady by remember { mutableStateOf(false) }
@@ -165,7 +165,7 @@ fun TowrMainScreen() {
                     if (gemmaEngine.isModelLoaded) {
                         isGemmaReady = true
                         val fileName = File(detectedPath).name
-                        modelStatusLabel = "Gemma Aktif: $fileName"
+                        modelStatusLabel = "Gemma: $fileName"
                     } else {
                         modelStatusLabel = "Gagal memuat model"
                     }
@@ -220,7 +220,7 @@ fun TowrMainScreen() {
 
                 withContext(Dispatchers.Main) {
                     if (isGemmaReady) {
-                        modelStatusLabel = "Gemma Aktif: $name"
+                        modelStatusLabel = "Gemma: $name"
                         Toast.makeText(context, "Model aktif: $name", Toast.LENGTH_SHORT).show()
                     } else {
                         modelStatusLabel = "Gagal memuat $name"
@@ -231,42 +231,124 @@ fun TowrMainScreen() {
         }
     }
 
-    if (showApiKeyDialog) {
+    // DIALOG PENGATURAN LENGKAP (SETTINGS SCREEN)
+    if (showSettingsDialog) {
+        var apiKeyText by remember { mutableStateOf(geminiCloudEngine.apiKey) }
+        var n8nWebhookText by remember { mutableStateOf(prefs.getString("n8n_webhook_url", "") ?: "") }
+        var turnsSlider by remember { mutableFloatStateOf(gemmaEngine.maxHistoryTurns.toFloat()) }
+        var tempSlider by remember { mutableFloatStateOf(gemmaEngine.temperature) }
+
         AlertDialog(
-            onDismissRequest = { showApiKeyDialog = false },
+            onDismissRequest = { showSettingsDialog = false },
             containerColor = TowrSurfaceElevated,
-            title = { Text("Konfigurasi Gemini Flash API", color = TowrElectricCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Settings, contentDescription = null, tint = TowrElectricCyan, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Pengaturan TOWR", color = TowrTextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
             text = {
-                Column {
-                    Text(
-                        "Masukkan API Key dari Google AI Studio (aistudio.google.com). 100% Gratis untuk pemakaian pribadi.",
-                        color = TowrTextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = apiKeyInput,
-                        onValueChange = { apiKeyInput = it },
-                        placeholder = { Text("AIzaSy...", color = TowrTextSecondary, fontSize = 12.sp) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = TowrElectricCyan,
-                            unfocusedBorderColor = TowrBorderDim,
-                            focusedTextColor = TowrTextPrimary,
-                            unfocusedTextColor = TowrTextPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // 1. Konfigurasi Gemini API
+                    Column {
+                        Text("Gemini Flash API Key (Cloud Hybrid)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = apiKeyText,
+                            onValueChange = { apiKeyText = it },
+                            placeholder = { Text("AIzaSy...", color = TowrTextSecondary, fontSize = 11.sp) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = TowrElectricCyan,
+                                unfocusedBorderColor = TowrBorderDim,
+                                focusedTextColor = TowrTextPrimary,
+                                unfocusedTextColor = TowrTextPrimary
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    // 2. Konfigurasi n8n Webhook
+                    Column {
+                        Text("n8n Webhook URL (Pemantau Email)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedTextField(
+                            value = n8nWebhookText,
+                            onValueChange = { n8nWebhookText = it },
+                            placeholder = { Text("https://n8n.domain.com/webhook/...", color = TowrTextSecondary, fontSize = 11.sp) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = TowrElectricCyan,
+                                unfocusedBorderColor = TowrBorderDim,
+                                focusedTextColor = TowrTextPrimary,
+                                unfocusedTextColor = TowrTextPrimary
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
+
+                    // 3. Batas Memori Percakapan Gemma
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Batas Memori Obrolan", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("${turnsSlider.toInt()} Putaran", color = TowrEmeraldGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = turnsSlider,
+                            onValueChange = { turnsSlider = it },
+                            valueRange = 2f..10f,
+                            steps = 7,
+                            colors = SliderDefaults.colors(thumbColor = TowrElectricCyan, activeTrackColor = TowrElectricCyan)
+                        )
+                    }
+
+                    // 4. Suhu / Kreativitas Gemma
+                    Column {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Suhu Inferensi (Temperature)", color = TowrSkyBlue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text(String.format(Locale.US, "%.1f", tempSlider), color = TowrEmeraldGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Slider(
+                            value = tempSlider,
+                            onValueChange = { tempSlider = it },
+                            valueRange = 0.1f..1.0f,
+                            steps = 8,
+                            colors = SliderDefaults.colors(thumbColor = TowrSkyBlue, activeTrackColor = TowrSkyBlue)
+                        )
+                    }
+
+                    // 5. Tombol Pilih Ulang Model
+                    OutlinedButton(
+                        onClick = {
+                            showSettingsDialog = false
+                            modelPickerLauncher.launch(arrayOf("*/*"))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, TowrSkyBlue.copy(alpha = 0.7f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, tint = TowrSkyBlue, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Pilih Ulang File Model (.litertlm)", color = TowrSkyBlue, fontSize = 12.sp)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        geminiCloudEngine.apiKey = apiKeyInput.trim()
+                        geminiCloudEngine.apiKey = apiKeyText.trim()
                         geminiCloudEngine.resetModel()
-                        showApiKeyDialog = false
-                        isHybridMode = geminiCloudEngine.apiKey.isNotBlank()
-                        Toast.makeText(context, if (isHybridMode) "Mode Hybrid Aktif!" else "API Key dikosongkan.", Toast.LENGTH_SHORT).show()
+                        prefs.edit().putString("n8n_webhook_url", n8nWebhookText.trim()).apply()
+                        gemmaEngine.maxHistoryTurns = turnsSlider.toInt()
+                        gemmaEngine.temperature = tempSlider
+                        showSettingsDialog = false
+                        Toast.makeText(context, "Pengaturan berhasil disimpan.", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = TowrElectricCyan)
                 ) {
@@ -274,7 +356,7 @@ fun TowrMainScreen() {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showApiKeyDialog = false }) {
+                TextButton(onClick = { showSettingsDialog = false }) {
                     Text("Batal", color = TowrTextSecondary)
                 }
             }
@@ -392,10 +474,11 @@ fun TowrMainScreen() {
                 modelStatus = modelStatusLabel,
                 isReady = isGemmaReady,
                 isHybrid = isHybridMode,
+                onSettingsClicked = { showSettingsDialog = true },
                 onSelectModelClicked = { modelPickerLauncher.launch(arrayOf("*/*")) },
                 onToggleHybridClicked = {
                     if (geminiCloudEngine.apiKey.isBlank()) {
-                        showApiKeyDialog = true
+                        showSettingsDialog = true
                     } else {
                         isHybridMode = !isHybridMode
                         val status = if (isHybridMode) "Mode Hybrid (Gemini Flash) Aktif" else "Mode 100% Offline (Gemma 2B) Aktif"
@@ -509,6 +592,7 @@ fun TowrTopBar(
     modelStatus: String,
     isReady: Boolean,
     isHybrid: Boolean,
+    onSettingsClicked: () -> Unit,
     onSelectModelClicked: () -> Unit,
     onToggleHybridClicked: () -> Unit,
     onClearChatClicked: () -> Unit
@@ -565,11 +649,19 @@ fun TowrTopBar(
             Spacer(modifier = Modifier.width(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // TOMBOL PENGATURAN (SETTINGS)
+                IconButton(onClick = onSettingsClicked, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Settings, contentDescription = "Pengaturan", tint = TowrSkyBlue, modifier = Modifier.size(18.dp))
+                }
+                Spacer(modifier = Modifier.width(2.dp))
+
+                // TOMBOL BERSIHKAN PESAN
                 IconButton(onClick = onClearChatClicked, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Delete, contentDescription = "Bersihkan Chat", tint = TowrTextSecondary, modifier = Modifier.size(18.dp))
                 }
                 Spacer(modifier = Modifier.width(4.dp))
 
+                // BADGE HYBRID INTERAKTIF
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
