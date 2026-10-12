@@ -50,6 +50,7 @@ import androidx.core.content.FileProvider
 import com.offline.aiassistant.ai.GeminiCloudEngine
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
+import com.offline.aiassistant.router.PendingDeleteAction
 import com.offline.aiassistant.tools.FileItemInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -70,6 +71,8 @@ val TowrEmeraldGreen = Color(0xFF10B981)
 val TowrGreenBg = Color(0xFF022C22)
 val TowrAmberWarning = Color(0xFFF59E0B)
 val TowrAmberBg = Color(0xFF451A03)
+val TowrCrimsonRed = Color(0xFFDC2626)
+val TowrRedBg = Color(0xFF450A0A)
 val TowrTextPrimary = Color(0xFFF8FAFC)
 val TowrTextSecondary = Color(0xFF94A3B8)
 
@@ -97,7 +100,9 @@ data class TowrChatMessage(
     val timestamp: String,
     val thinkingProcess: List<ToolExecutionLog>? = null,
     val foundFiles: List<FileSearchResult>? = null,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val isPendingConfirmation: Boolean = false,
+    val pendingDeleteAction: PendingDeleteAction? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -387,6 +392,9 @@ fun TowrMainScreen() {
                 listState.animateScrollToItem(messages.size - 1)
 
                 val startTime = System.currentTimeMillis()
+                var isPendingConf = false
+                var pendingActionObj: PendingDeleteAction? = null
+
                 val (finalMessage, files, toolName) = withContext(Dispatchers.IO) {
                     val lowerTrimmed = trimmed.lowercase()
 
@@ -395,15 +403,23 @@ fun TowrMainScreen() {
                         if (cloudResponse != "OFFLINE_FALLBACK" && !cloudResponse.startsWith("Gagal komputasi Cloud")) {
                             if (cloudResponse.contains("\"action\"")) {
                                 val routerRes = actionRouter.processInstruction(cloudResponse)
+                                isPendingConf = routerRes.isPendingConfirmation
+                                pendingActionObj = routerRes.pendingAction
                                 Triple(routerRes.message, routerRes.files, "Gemini Flash (Cloud) + Tools")
                             } else {
                                 Triple(cloudResponse, emptyList(), "Gemini 1.5 Flash (Cloud)")
                             }
                         } else {
-                            processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
+                            val res = processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
+                            isPendingConf = res.isPendingConfirmation
+                            pendingActionObj = res.pendingAction
+                            Triple(res.message, res.files, res.toolName)
                         }
                     } else {
-                        processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
+                        val res = processWithLocalGemma(trimmed, lowerTrimmed, gemmaEngine, actionRouter)
+                        isPendingConf = res.isPendingConfirmation
+                        pendingActionObj = res.pendingAction
+                        Triple(res.message, res.files, res.toolName)
                     }
                 }
                 val latency = System.currentTimeMillis() - startTime
@@ -436,7 +452,9 @@ fun TowrMainScreen() {
                         timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                         thinkingProcess = log,
                         foundFiles = if (resultFiles.isNotEmpty()) resultFiles else null,
-                        isLoading = false
+                        isLoading = false,
+                        isPendingConfirmation = isPendingConf,
+                        pendingDeleteAction = pendingActionObj
                     )
                 }
 
@@ -537,6 +555,31 @@ fun TowrMainScreen() {
                                     message = msg,
                                     onFileClick = { file ->
                                         openFileWithSystemApp(context, file.filePath)
+                                    },
+                                    onConfirmDelete = { pendingAction ->
+                                        coroutineScope.launch {
+                                            val res = actionRouter.executeConfirmedDelete(pendingAction)
+                                            messages.add(
+                                                TowrChatMessage(
+                                                    sender = MessageSender.TOWR,
+                                                    messageText = res.message,
+                                                    timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                                )
+                                            )
+                                            listState.animateScrollToItem(messages.size - 1)
+                                        }
+                                    },
+                                    onCancelDelete = {
+                                        messages.add(
+                                            TowrChatMessage(
+                                                sender = MessageSender.TOWR,
+                                                messageText = "Penghapusan berkas dibatalkan. Berkas Anda tetap aman.",
+                                                timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                                            )
+                                        )
+                                        coroutineScope.launch {
+                                            listState.animateScrollToItem(messages.size - 1)
+                                        }
                                     }
                                 )
                             }
@@ -548,18 +591,32 @@ fun TowrMainScreen() {
     }
 }
 
+data class LocalGemmaResult(
+    val message: String,
+    val files: List<FileItemInfo>,
+    val toolName: String,
+    val isPendingConfirmation: Boolean = false,
+    val pendingAction: PendingDeleteAction? = null
+)
+
 suspend fun processWithLocalGemma(
     trimmed: String,
     lowerTrimmed: String,
     gemmaEngine: GemmaEngine,
     actionRouter: ActionRouter
-): Triple<String, List<FileItemInfo>, String> {
+): LocalGemmaResult {
     return if (gemmaEngine.isModelLoaded) {
         val aiResponse = gemmaEngine.askGemma(trimmed)
         if (aiResponse.contains("\"action\"")) {
             val routerRes = actionRouter.processInstruction(aiResponse)
             gemmaEngine.addTurn(trimmed, routerRes.message)
-            Triple(routerRes.message, routerRes.files, "Gemma AI + ActionRouter")
+            LocalGemmaResult(
+                message = routerRes.message,
+                files = routerRes.files,
+                toolName = "Gemma AI + ActionRouter",
+                isPendingConfirmation = routerRes.isPendingConfirmation,
+                pendingAction = routerRes.pendingAction
+            )
         } else if (lowerTrimmed.startsWith("cari") || 
                    lowerTrimmed.startsWith("buka") || 
                    lowerTrimmed.startsWith("luncurkan") || 
@@ -570,14 +627,30 @@ suspend fun processWithLocalGemma(
                    lowerTrimmed.contains("whatsapp")) {
             val routerRes = actionRouter.processInstruction(trimmed)
             gemmaEngine.addTurn(trimmed, routerRes.message)
-            Triple(routerRes.message, routerRes.files, "ActionRouter Native Guard")
+            LocalGemmaResult(
+                message = routerRes.message,
+                files = routerRes.files,
+                toolName = "ActionRouter Native Guard",
+                isPendingConfirmation = routerRes.isPendingConfirmation,
+                pendingAction = routerRes.pendingAction
+            )
         } else {
             gemmaEngine.addTurn(trimmed, aiResponse)
-            Triple(aiResponse, emptyList(), "Gemma 2B (On-Device LLM)")
+            LocalGemmaResult(
+                message = aiResponse,
+                files = emptyList(),
+                toolName = "Gemma 2B (On-Device LLM)"
+            )
         }
     } else {
         val routerRes = actionRouter.processInstruction(trimmed)
-        Triple(routerRes.message, routerRes.files, "ActionRouter Native Engine")
+        LocalGemmaResult(
+            message = routerRes.message,
+            files = routerRes.files,
+            toolName = "ActionRouter Native Engine",
+            isPendingConfirmation = routerRes.isPendingConfirmation,
+            pendingAction = routerRes.pendingAction
+        )
     }
 }
 
@@ -745,19 +818,33 @@ fun UserChatBubble(message: TowrChatMessage) {
 }
 
 @Composable
-fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) -> Unit) {
+fun TowrAgentBubble(
+    message: TowrChatMessage, 
+    onFileClick: (FileSearchResult) -> Unit,
+    onConfirmDelete: (PendingDeleteAction) -> Unit = {},
+    onCancelDelete: () -> Unit = {}
+) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
                 .background(TowrSurfaceDark)
-                .border(1.2.dp, TowrElectricCyan.copy(alpha = 0.7f), RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp))
+                .border(
+                    width = 1.2.dp, 
+                    color = if (message.isPendingConfirmation) TowrCrimsonRed else TowrElectricCyan.copy(alpha = 0.7f), 
+                    shape = RoundedCornerShape(topStart = 4.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp)
+                )
                 .padding(14.dp)
         ) {
             Column {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("TOWR On-Device Intelligence", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (message.isPendingConfirmation) "⚠️ Peringatan Keamanan TOWR" else "TOWR On-Device Intelligence", 
+                        color = if (message.isPendingConfirmation) TowrCrimsonRed else TowrElectricCyan, 
+                        fontSize = 12.sp, 
+                        fontWeight = FontWeight.Bold
+                    )
                     Text(message.timestamp, color = TowrTextSecondary, fontSize = 10.sp)
                 }
                 Spacer(modifier = Modifier.height(10.dp))
@@ -786,14 +873,44 @@ fun TowrAgentBubble(message: TowrChatMessage, onFileClick: (FileSearchResult) ->
                         Spacer(modifier = Modifier.height(12.dp))
                     }
 
+                    // Teks Pesan
+                    Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 21.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Kartu Berkas (jika ada file yang ditemukan)
                     if (!message.foundFiles.isNullOrEmpty()) {
                         message.foundFiles.forEach { fileItem ->
                             SingleTapFileCard(file = fileItem, onFileClick = { onFileClick(fileItem) })
-                            Spacer(modifier = Modifier.height(10.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                         }
                     }
 
-                    Text(message.messageText, color = TowrTextPrimary, fontSize = 14.sp, lineHeight = 21.sp)
+                    // KARTU GUARDRAIL KONFIRMASI HAPUS (HUMAN-IN-THE-LOOP)
+                    if (message.isPendingConfirmation && message.pendingDeleteAction != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onCancelDelete,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TowrTextSecondary),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, TowrBorderDim),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Batal", fontSize = 12.sp)
+                            }
+                            Button(
+                                onClick = { onConfirmDelete(message.pendingDeleteAction) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = TowrCrimsonRed),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Hapus Sekarang", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
             }
         }
