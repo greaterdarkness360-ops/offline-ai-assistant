@@ -1,6 +1,7 @@
 package com.offline.aiassistant.ai
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,19 +25,12 @@ object GeminiCloudEngine {
             return@withContext "ERROR: API Key Gemini belum diatur di menu Pengaturan [⚙️]."
         }
 
-        // Daftar model resmi Google dari yang paling stabil & kapasitas server terbesar
-        val modelsToTry = mutableListOf<String>()
-        if (!customModelName.isNullOrBlank()) {
-            modelsToTry.add(customModelName.trim().removePrefix("models/"))
+        // Gunakan model yang diketik pengguna, atau default resmi gemini-3.8-flash
+        val modelTarget = if (!customModelName.isNullOrBlank() && !customModelName.contains("2.5") && !customModelName.contains("1.5")) {
+            customModelName.trim().removePrefix("models/")
+        } else {
+            "gemini-3.8-flash"
         }
-        // Tambahkan model-model stabil dengan server besar
-        listOf(
-            "gemini-2.0-flash",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-flash-8b",
-            "gemini-3.8-flash",
-            "gemini-2.5-flash"
-        ).forEach { if (!modelsToTry.contains(it)) modelsToTry.add(it) }
 
         val fullInstruction = buildString {
             append(systemPrompt)
@@ -56,13 +50,17 @@ object GeminiCloudEngine {
         val rootJson = JSONObject().put("contents", contentsArray)
         val jsonPayloadString = rootJson.toString()
 
-        var lastDiagnostic = ""
+        var lastError = ""
+        val maxRetries = 2
 
-        for (modelName in modelsToTry) {
-            val cleanModel = modelName.trim()
-            val generateUrl = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$cleanKey"
+        // Percobaan pengiriman dengan jeda jika terkena antrean server 503
+        for (attempt in 0..maxRetries) {
+            if (attempt > 0) {
+                delay(1500) // Tunggu 1.5 detik sebelum mencoba lagi saat server Google padat
+            }
 
             try {
+                val generateUrl = "https://generativelanguage.googleapis.com/v1beta/models/$modelTarget:generateContent?key=$cleanKey"
                 val url = URL(generateUrl)
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
@@ -92,28 +90,27 @@ object GeminiCloudEngine {
                             return@withContext parts.getJSONObject(0).optString("text").trim()
                         }
                     }
-                    return@withContext "Jawaban kosong dari server Gemini ($cleanModel)."
+                    return@withContext "Jawaban kosong dari server Gemini ($modelTarget)."
                 } else {
                     val errorStream = conn.errorStream
                     val errorMsg = if (errorStream != null) {
                         BufferedReader(InputStreamReader(errorStream, "UTF-8")).readText()
                     } else "HTTP $responseCode"
 
-                    lastDiagnostic = "Model $cleanModel ($responseCode): $errorMsg"
+                    lastError = "Google AI Studio ($responseCode): $errorMsg"
 
-                    // Jika error 503 (Server Penuh / High Demand), 404 (Tidak Ada), atau 429 (Limit Sementara)
-                    // JANGAN BERHENTI, langsung lompat mencoba model alternatif berikutnya!
-                    if (responseCode in listOf(503, 404, 429)) {
+                    // Jika terkena 503 (Server Padat) atau 429 (Batas Waktu), lakukan retry
+                    if (responseCode == 503 || responseCode == 429) {
                         continue
                     }
 
-                    return@withContext "ERROR: Google AI Studio ($responseCode): $errorMsg"
+                    return@withContext "ERROR: $lastError"
                 }
             } catch (e: Exception) {
-                lastDiagnostic = "Model $cleanModel: ${e.localizedMessage}"
+                lastError = e.localizedMessage ?: "Jaringan terputus"
             }
         }
 
-        "ERROR: Seluruh server model Gemini Cloud sedang padat/tidak merespon. Terakhir: $lastDiagnostic"
+        "ERROR: Server Gemini Cloud ($modelTarget) sedang padat antrean: $lastError"
     }
 }
