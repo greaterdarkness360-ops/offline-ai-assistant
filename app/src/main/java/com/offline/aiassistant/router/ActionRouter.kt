@@ -11,6 +11,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -35,9 +36,19 @@ data class AgentAction(
     val content: String? = null
 )
 
+// =========================================================================
+// KONTRAK DATA P2: GUARDRAIL & KARTU KONFIRMASI HAPUS BERKAS
+// =========================================================================
+data class PendingDeleteInfo(
+    val summaryTitle: String,
+    val files: List<FileItemInfo>,
+    val fileCount: Int = files.size
+)
+
 data class RouterResponse(
     val message: String,
-    val files: List<FileItemInfo> = emptyList()
+    val files: List<FileItemInfo> = emptyList(),
+    val pendingDelete: PendingDeleteInfo? = null
 )
 
 class ActionRouter(private val context: Context) {
@@ -52,6 +63,62 @@ class ActionRouter(private val context: Context) {
     private val jsonParser = Json { 
         ignoreUnknownKeys = true 
         isLenient = true 
+    }
+
+    // Eksekusi final saat pengguna menekan tombol "Hapus Permanen" pada kartu dialog
+    fun executeConfirmedDelete(pending: PendingDeleteInfo): String {
+        var deletedCount = 0
+        var failedCount = 0
+        for (item in pending.files) {
+            val f = File(item.path)
+            if (f.exists() && f.delete()) {
+                deletedCount++
+            } else {
+                failedCount++
+            }
+        }
+        return if (failedCount == 0) {
+            "🗑️ Berhasil menghapus semua ($deletedCount berkas) secara permanen."
+        } else {
+            "🗑️ Berhasil menghapus $deletedCount berkas ($failedCount berkas gagal dihapus)."
+        }
+    }
+
+    // Fungsi utilitas hapus langsung berdasarkan nama berkas
+    fun deleteFileByName(targetName: String): String {
+        val cleanName = targetName.trim()
+        if (cleanName.isBlank()) return "Sebutkan nama file yang ingin dihapus."
+        val found = fileTools.searchFiles(cleanName)
+        if (found.isEmpty()) return "Berkas '$targetName' tidak ditemukan di penyimpanan."
+        var deleted = 0
+        for (item in found) {
+            val f = File(item.path)
+            if (f.exists() && f.delete()) deleted++
+        }
+        return if (deleted > 0) "Berhasil menghapus $deleted berkas yang cocok dengan '$targetName'."
+        else "Gagal menghapus berkas '$targetName'."
+    }
+
+    // Menyiapkan respons konfirmasi guardrail sebelum file dihapus
+    private fun prepareDeleteResponse(targetName: String): RouterResponse {
+        val cleanName = targetName.trim()
+        if (cleanName.isBlank()) {
+            return RouterResponse("Sebutkan nama file yang ingin dihapus.")
+        }
+        val found = fileTools.searchFiles(cleanName)
+        if (found.isEmpty()) {
+            return RouterResponse("Berkas '$cleanName' tidak ditemukan di penyimpanan.")
+        }
+        val pending = PendingDeleteInfo(
+            summaryTitle = "Konfirmasi Hapus: $cleanName",
+            files = found,
+            fileCount = found.size
+        )
+        return RouterResponse(
+            message = "Ditemukan ${found.size} berkas '$cleanName'. Konfirmasi untuk menghapus secara permanen:",
+            files = found,
+            pendingDelete = pending
+        )
     }
 
     suspend fun processInstruction(input: String): RouterResponse = withContext(Dispatchers.IO) {
@@ -70,12 +137,12 @@ class ActionRouter(private val context: Context) {
         val lower = trimmed.lowercase()
 
         when {
-            // PINTASAN INSTAN CEK EMAIL
+            // PINTASAN INSTAN CEK EMAIL (P3)
             lower.contains("cek email") || lower.contains("email masuk") || lower.contains("baca email") || lower.contains("ada email") -> {
                 RouterResponse(fetchEmailsFromGas(null))
             }
 
-            // EKSEKUSI PENGHAPUSAN FILE BERDASARKAN NAMA
+            // EKSEKUSI PENGHAPUSAN FILE DENGAN GUARDRAIL & KARTU KONFIRMASI (P2)
             lower.startsWith("hapus file") || lower.startsWith("hapus") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat")) {
                     val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
@@ -86,16 +153,11 @@ class ActionRouter(private val context: Context) {
                         .replace(Regex("(?i)(semua|yang bernama|file|berkas)\\s*"), "")
                         .trim()
 
-                    if (targetName.isBlank()) {
-                        RouterResponse("Sebutkan nama file yang ingin dihapus.")
-                    } else {
-                        val msg = fileTools.deleteFileByName(targetName)
-                        RouterResponse(msg)
-                    }
+                    prepareDeleteResponse(targetName)
                 }
             }
 
-            // KIRIM PESAN WHATSAPP
+            // PENGIRIMAN PESAN WHATSAPP
             lower.contains("whatsapp") || lower.contains("wa") -> {
                 val waText = trimmed.replace(Regex("(?i)^(kirim ke wa|kirim wa|wa|whatsapp)\\s*[:,-]?\\s*"), "")
                 RouterResponse(shareBridgeTool.shareTextToApp(waText, "whatsapp"))
@@ -176,7 +238,7 @@ class ActionRouter(private val context: Context) {
             }
             "delete_file" -> {
                 val target = action.file_name ?: action.query ?: ""
-                RouterResponse(fileTools.deleteFileByName(target))
+                prepareDeleteResponse(target)
             }
             "search_files" -> {
                 val list = fileTools.searchFilesAdvanced(
