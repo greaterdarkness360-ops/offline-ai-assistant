@@ -23,7 +23,7 @@ class GemmaEngine(private val context: Context) {
         1. Jika pengguna meminta tindakan fisik di HP, jawab HANYA dalam format JSON satu baris:
            - Buka aplikasi: {"action": "open_app", "app_name": "NamaAplikasi"}
            - Cari file: {"action": "search_files", "query": "kata_kunci"}
-           - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_file"}
+           - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_atau_keduanya"}
            - Kirim WhatsApp ke kontak: {"action": "share_wa", "contact_name": "NamaKontak", "text": "isi pesan"}
            - Buka chat WhatsApp kontak: {"action": "share_wa", "contact_name": "NamaKontak", "text": ""}
            - Cek file ganda: {"action": "clean_duplicates", "folder": "Download", "delete_duplicates": false}
@@ -34,10 +34,10 @@ class GemmaEngine(private val context: Context) {
            - Simpan catatan ke Notion: {"action": "save_note_for_notion", "title": "Judul", "content": "isi catatan"}
         
         ATURAN PENGHAPUSAN FILE:
-        - Jika pengguna berkata "hapus file [nama]", "hapus file kedua", "hapus nomor 2", gunakan {"action": "delete_file", "file_name": "..."}.
+        - Jika pengguna berkata "hapus file [nama]", "hapus file kedua", "hapus keduanya", gunakan {"action": "delete_file", "file_name": "..."}.
         - Gunakan "clean_duplicates" HANYA jika pengguna menyebut kata eksplisit "duplikat", "file ganda", atau "file kembar".
         
-        2. Jika pengguna bertanya hal umum atau meminta ringkasan/evaluasi daftar obrolan, jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa format JSON.
+        2. Jika pengguna bertanya hal umum, menyapa santai, atau meminta evaluasi daftar obrolan ("apakah ini sudah semuanya?"), jawablah langsung secara ramah dan jelas dalam Bahasa Indonesia tanpa format JSON.
     """.trimIndent()
 
     suspend fun loadModel(modelPath: String): String = withContext(Dispatchers.IO) {
