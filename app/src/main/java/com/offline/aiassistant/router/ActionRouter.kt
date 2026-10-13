@@ -28,7 +28,9 @@ data class AgentAction(
     val text: String? = null,
     val file_path: String? = null,
     val title: String? = null,
-    val content: String? = null
+    val content: String? = null,
+    val contact_name: String? = null,
+    val phone_number: String? = null
 )
 
 data class PendingDeleteInfo(
@@ -71,9 +73,27 @@ class ActionRouter(context: Context) {
         val lower = trimmed.lowercase()
 
         when {
-            // PERINTAH HAPUS
+            // DETEKSI PESAN & KONTAK WHATSAPP
+            lower.contains("wa") || lower.contains("whatsapp") -> {
+                val match = Regex("(?i)(?:kirim|chat|buka|pesan)?\\s*(?:pesan)?\\s*(?:ke|untuk)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_\\s]+?)(?:\\s*[:,-]\\s*|\\s+pesan\\s+|\\s+isi\\s+)(.*)").find(trimmed)
+
+                if (match != null) {
+                    val contactTarget = match.groupValues[1].trim()
+                    val messageBody = match.groupValues[2].trim()
+                    RouterResponse(shareBridgeTool.shareTextToApp(text = messageBody, targetApp = "whatsapp", contactName = contactTarget))
+                } else {
+                    val contactOnly = Regex("(?i)(?:chat|buka|kirim)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_]+)").find(trimmed)?.groupValues?.get(1)?.trim() ?: ""
+                    if (contactOnly.isNotBlank() && contactOnly.lowercase() !in listOf("pesan", "aplikasi", "chat")) {
+                        RouterResponse(shareBridgeTool.shareTextToApp(text = "", targetApp = "whatsapp", contactName = contactOnly))
+                    } else {
+                        val generalText = trimmed.replace(Regex("(?i)^(kirim ke wa|kirim wa|whatsapp|wa)\\s*[:,-]?\\s*"), "")
+                        RouterResponse(shareBridgeTool.shareTextToApp(text = generalText, targetApp = "whatsapp"))
+                    }
+                }
+            }
+
+            // PERINTAH HAPUS BERKAS
             lower.startsWith("hapus") || lower.contains("hapus file") || lower.contains("delete") -> {
-                // Hanya jalankan clean duplicate jika eksplisit meminta duplikat/ganda/kembar
                 if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("kembar")) {
                     val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
                     RouterResponse(msg)
@@ -161,20 +181,22 @@ class ActionRouter(context: Context) {
     private suspend fun executeJsonAction(action: AgentAction, originalInput: String): RouterResponse {
         val actionName = action.action.lowercase()
 
-        // PENGAMAN KHUSUS: Jika AI salah memanggil clean_duplicates padahal user merujuk ke urutan/file tunggal
+        // PENGAMAN KHUSUS DUPLIKAT
         if (actionName == "clean_duplicates") {
             val lowerInput = originalInput.lowercase()
             val isExplicitDuplicate = lowerInput.contains("duplikat") || lowerInput.contains("ganda") || lowerInput.contains("kembar")
             if (!isExplicitDuplicate && (lowerInput.contains("kedua") || lowerInput.contains("pertama") || lowerInput.contains("nomor") || lowerInput.contains("file"))) {
-                // Alihkan ke delete_file yang aman
-                val targetRef = originalInput
-                    .replace(Regex("(?i)^(hapus file|hapus)\\s*"), "")
-                    .trim()
+                val targetRef = originalInput.replace(Regex("(?i)^(hapus file|hapus)\\s*"), "").trim()
                 return prepareDeleteGuardrail(targetRef)
             }
         }
 
         return when (actionName) {
+            "share_wa", "send_whatsapp", "open_whatsapp" -> {
+                val targetContact = (action.contact_name ?: action.phone_number ?: "").trim()
+                val msg = action.text ?: ""
+                RouterResponse(shareBridgeTool.shareTextToApp(text = msg, targetApp = "whatsapp", contactName = targetContact.ifBlank { null }))
+            }
             "delete_file" -> {
                 val target = action.file_name ?: action.query ?: ""
                 prepareDeleteGuardrail(target)
@@ -199,7 +221,6 @@ class ActionRouter(context: Context) {
             "images_to_pdf" -> RouterResponse(fileTools.convertImagesToPdf(action.images ?: emptyList(), action.output_pdf ?: "TOWR_Result.pdf"))
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
-            "share_wa" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", "whatsapp"))
             "share_text" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", action.target_app ?: "general"))
             "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
             "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
@@ -207,9 +228,6 @@ class ActionRouter(context: Context) {
         }
     }
 
-    /**
-     * Mempersiapkan Guardrail Penghapusan: Tidak langsung menghapus, melainkan memicu kartu konfirmasi
-     */
     private fun prepareDeleteGuardrail(targetReference: String): RouterResponse {
         val target = fileTools.resolveTargetFile(targetReference)
         return if (target != null) {
@@ -226,9 +244,6 @@ class ActionRouter(context: Context) {
         }
     }
 
-    /**
-     * Dipanggil hanya ketika user menekan tombol [Hapus Sekarang] pada kartu konfirmasi UI
-     */
     fun executeConfirmedDelete(filePath: String): String {
         return fileTools.deletePhysicalFile(filePath)
     }
