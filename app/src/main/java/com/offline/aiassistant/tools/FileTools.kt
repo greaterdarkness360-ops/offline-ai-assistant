@@ -36,30 +36,47 @@ class FileTools(private val context: Context) {
         var lastSearchQuery: String = ""
     }
 
+    /**
+     * Pencarian Berkas Cerdas: Mendukung filter waktu 24 jam, filter folder Download, dan token multi-kata
+     */
     fun searchFilesAdvanced(
         query: String = "",
         minSizeMb: Double? = null,
         maxSizeMb: Double? = null,
-        sortBy: String? = null
+        sortBy: String? = null,
+        maxAgeHours: Long? = null,
+        folderFilter: String? = null
     ): List<FileItemInfo> {
         val cleanQuery = query.trim()
-        lastSearchQuery = cleanQuery
+        lastSearchQuery = when {
+            cleanQuery.isNotBlank() && maxAgeHours != null -> "$cleanQuery ($maxAgeHours jam terakhir)"
+            cleanQuery.isNotBlank() -> cleanQuery
+            maxAgeHours != null -> "Unduhan $maxAgeHours jam terakhir"
+            else -> "Semua berkas terbaru"
+        }
+
         val foundMap = mutableMapOf<String, FileItemInfo>()
 
         val tokens = cleanQuery.lowercase()
             .split(Regex("[\\s_\\-]+"))
             .filter { it.isNotBlank() }
 
+        val currentTime = System.currentTimeMillis()
+        val minTimestampMs = if (maxAgeHours != null) currentTime - (maxAgeHours * 3600 * 1000L) else null
+
+        // 1. Jalur MediaStore API
         try {
-            queryMediaStore(tokens, foundMap)
+            queryMediaStore(tokens, minTimestampMs, folderFilter, foundMap)
         } catch (_: Exception) {}
 
+        // 2. Jalur Pemindaian Folder Fisik
         try {
-            scanAllUserFolders(tokens, foundMap)
+            scanAllUserFolders(tokens, minTimestampMs, folderFilter, foundMap)
         } catch (_: Exception) {}
 
         var filteredList = foundMap.values.toList()
 
+        // Filter ukuran jika ada
         if (minSizeMb != null) {
             val minBytes = (minSizeMb * 1024 * 1024).toLong()
             filteredList = filteredList.filter { it.sizeBytes >= minBytes }
@@ -69,10 +86,22 @@ class FileTools(private val context: Context) {
             filteredList = filteredList.filter { it.sizeBytes <= maxBytes }
         }
 
+        // Filter waktu
+        if (minTimestampMs != null) {
+            filteredList = filteredList.filter { it.lastModifiedTimestamp >= minTimestampMs }
+        }
+
+        // Filter folder jika ditentukan
+        if (!folderFilter.isNullOrBlank()) {
+            val fLower = folderFilter.lowercase()
+            filteredList = filteredList.filter { it.path.lowercase().contains("/$fLower") }
+        }
+
+        // Pengurutan
         filteredList = when (sortBy?.lowercase()) {
             "largest" -> filteredList.sortedByDescending { it.sizeBytes }
             "oldest" -> filteredList.sortedBy { it.lastModifiedTimestamp }
-            else -> filteredList.sortedByDescending { it.lastModifiedTimestamp }
+            else -> filteredList.sortedByDescending { it.lastModifiedTimestamp } // Default: Terbaru
         }
 
         lastSearchResults.clear()
@@ -85,19 +114,19 @@ class FileTools(private val context: Context) {
     fun searchLocal(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
 
     /**
-     * Resolusi Fleksibel: Menangani Hapus Berkas Tunggal Maupun Massal ("keduanya", "semua", dll)
+     * Resolusi Target Hapus: Menangani satu berkas maupun banyak berkas sekaligus ("keduanya", "semua")
      */
     fun resolveTargetFiles(reference: String): List<FileItemInfo> {
         val clean = reference.trim().lowercase()
 
-        // 1. Cek apakah meminta hapus massal
+        // Cek jika meminta hapus massal
         if (clean.contains("keduanya") || clean.contains("semua") || clean.contains("semuanya") || clean.contains("seluruh")) {
             if (lastSearchResults.isNotEmpty()) {
                 return lastSearchResults.toList()
             }
         }
 
-        // 2. Cek apakah merujuk nomor urut tunggal
+        // Cek jika merujuk nomor urut tunggal
         val targetIndex: Int? = when {
             clean.contains("pertama") || clean.contains("kesatu") || clean == "1" || clean.contains("ke-1") || clean.contains("ke 1") || clean.contains("nomor 1") || clean.contains("no 1") -> 0
             clean.contains("kedua") || clean == "2" || clean.contains("ke-2") || clean.contains("ke 2") || clean.contains("nomor 2") || clean.contains("no 2") -> 1
@@ -116,17 +145,19 @@ class FileTools(private val context: Context) {
             return listOf(lastSearchResults[targetIndex])
         }
 
-        // 3. Cek kecocokan nama dalam hasil pencarian terakhir
+        // Cek kecocokan nama dalam hasil pencarian terakhir
         val matchedInRecent = lastSearchResults.filter {
             it.name.contains(clean, ignoreCase = true) || clean.contains(it.name.substringBeforeLast(".").lowercase())
         }
         if (matchedInRecent.isNotEmpty()) return matchedInRecent
 
-        // 4. Cari langsung di penyimpanan jika belum ada di memori
         val directSearch = searchFilesAdvanced(clean)
         return directSearch
     }
 
+    /**
+     * Eksekusi Penghapusan Fisik Batch
+     */
     fun deletePhysicalFiles(filePaths: List<String>): String {
         var successCount = 0
         var failCount = 0
@@ -152,7 +183,12 @@ class FileTools(private val context: Context) {
         }
     }
 
-    private fun queryMediaStore(tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>) {
+    private fun queryMediaStore(
+        tokens: List<String>,
+        minTimestampMs: Long?,
+        folderFilter: String?,
+        outputMap: MutableMap<String, FileItemInfo>
+    ) {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -167,12 +203,26 @@ class FileTools(private val context: Context) {
             MediaStore.Files.FileColumns.DATE_MODIFIED
         )
 
-        val selection = if (tokens.isNotEmpty()) {
-            tokens.joinToString(" AND ") { "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? COLLATE NOCASE" }
-        } else null
-        val selectionArgs = if (tokens.isNotEmpty()) {
-            tokens.map { "%$it%" }.toTypedArray()
-        } else null
+        val conditions = mutableListOf<String>()
+        val args = mutableListOf<String>()
+
+        if (tokens.isNotEmpty()) {
+            tokens.forEach {
+                conditions.add("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? COLLATE NOCASE")
+                args.add("%$it%")
+            }
+        }
+        if (minTimestampMs != null) {
+            conditions.add("${MediaStore.Files.FileColumns.DATE_MODIFIED} >= ?")
+            args.add("${minTimestampMs / 1000L}")
+        }
+        if (!folderFilter.isNullOrBlank()) {
+            conditions.add("${MediaStore.Files.FileColumns.DATA} LIKE ?")
+            args.add("%/$folderFilter/%")
+        }
+
+        val selection = if (conditions.isNotEmpty()) conditions.joinToString(" AND ") else null
+        val selectionArgs = if (args.isNotEmpty()) args.toTypedArray() else null
 
         val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
 
@@ -206,40 +256,64 @@ class FileTools(private val context: Context) {
         }
     }
 
-    private fun scanAllUserFolders(tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>) {
+    private fun scanAllUserFolders(
+        tokens: List<String>,
+        minTimestampMs: Long?,
+        folderFilter: String?,
+        outputMap: MutableMap<String, FileItemInfo>
+    ) {
         val storageRoot = Environment.getExternalStorageDirectory() ?: return
-        val targetFolders = listOf(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-            File(storageRoot, "WhatsApp/Media/WhatsApp Documents"),
-            File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents"),
-            File(storageRoot, "Telegram/Telegram Documents")
-        )
+        val targetFolders = if (!folderFilter.isNullOrBlank() && folderFilter.equals("Download", ignoreCase = true)) {
+            listOf(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                File(storageRoot, "Download")
+            )
+        } else {
+            listOf(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+                File(storageRoot, "WhatsApp/Media/WhatsApp Documents"),
+                File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents"),
+                File(storageRoot, "Telegram/Telegram Documents")
+            )
+        }
 
         for (folder in targetFolders) {
             if (folder.exists() && folder.canRead()) {
-                scanFolderRecursively(folder, tokens, outputMap, depth = 0)
+                scanFolderRecursively(folder, tokens, minTimestampMs, outputMap, depth = 0)
             }
         }
 
-        storageRoot.listFiles()?.forEach { rootChild ->
-            if (rootChild.isDirectory && !rootChild.name.startsWith(".") && rootChild.name != "Android") {
-                scanFolderRecursively(rootChild, tokens, outputMap, depth = 0)
+        if (folderFilter.isNullOrBlank()) {
+            storageRoot.listFiles()?.forEach { rootChild ->
+                if (rootChild.isDirectory && !rootChild.name.startsWith(".") && rootChild.name != "Android") {
+                    scanFolderRecursively(rootChild, tokens, minTimestampMs, outputMap, depth = 0)
+                }
             }
         }
     }
 
-    private fun scanFolderRecursively(dir: File, tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
+    private fun scanFolderRecursively(
+        dir: File,
+        tokens: List<String>,
+        minTimestampMs: Long?,
+        outputMap: MutableMap<String, FileItemInfo>,
+        depth: Int
+    ) {
         if (depth > 8) return
         val files = dir.listFiles() ?: return
 
         for (file in files) {
             if (file.isDirectory) {
                 if (!file.name.startsWith(".") && file.name != "Android") {
-                    scanFolderRecursively(file, tokens, outputMap, depth + 1)
+                    scanFolderRecursively(file, tokens, minTimestampMs, outputMap, depth + 1)
                 }
             } else {
+                if (minTimestampMs != null && file.lastModified() < minTimestampMs) {
+                    continue
+                }
+
                 val fileNameLower = file.name.lowercase()
                 val isMatch = if (tokens.isEmpty()) true else tokens.all { token -> fileNameLower.contains(token) }
 
