@@ -5,9 +5,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
@@ -46,6 +50,7 @@ import com.offline.aiassistant.ai.GeminiCloudEngine
 import com.offline.aiassistant.ai.GemmaEngine
 import com.offline.aiassistant.router.ActionRouter
 import com.offline.aiassistant.router.PendingDeleteInfo
+import com.offline.aiassistant.router.RouterResponse
 import com.offline.aiassistant.tools.FileSearchResult
 import com.offline.aiassistant.tools.FileTools
 import kotlinx.coroutines.Dispatchers
@@ -98,7 +103,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Minta izin membaca kontak otomatis jika belum diberikan
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), 101)
         }
@@ -127,23 +131,59 @@ fun TowrTheme(content: @Composable () -> Unit) {
     )
 }
 
-fun findModelPath(): String? {
-    val searchDirectories = listOf(
-        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-        File(Environment.getExternalStorageDirectory(), "Download"),
-        File(Environment.getExternalStorageDirectory(), "Documents")
-    )
+/**
+ * Resolusi URI Dokumen dari File Picker HP ke Path Fisik Absolut
+ */
+fun resolveRealPathFromUri(context: Context, uri: Uri): String? {
+    if (uri.scheme == "file") return uri.path
 
-    for (dir in searchDirectories) {
-        if (dir != null && dir.exists() && dir.canRead()) {
-            val modelFiles = dir.listFiles { file -> file.isFile && file.extension.lowercase() == "litertlm" }
-            if (!modelFiles.isNullOrEmpty()) {
-                val gpuPreferred = modelFiles.firstOrNull { it.name.contains("gpu", ignoreCase = true) }
-                return (gpuPreferred ?: modelFiles.first()).absolutePath
+    if (DocumentsContract.isDocumentUri(context, uri)) {
+        if (uri.authority == "com.android.externalstorage.documents") {
+            val docId = DocumentsContract.getDocumentId(uri)
+            val split = docId.split(":")
+            val type = split[0]
+            val relativePath = if (split.size > 1) split[1] else ""
+            if ("primary".equals(type, ignoreCase = true)) {
+                val candidate = File(Environment.getExternalStorageDirectory(), relativePath)
+                if (candidate.exists()) return candidate.absolutePath
+            } else {
+                val candidate = File("/storage/$type", relativePath)
+                if (candidate.exists()) return candidate.absolutePath
             }
         }
     }
+
+    try {
+        val projection = arrayOf(MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME)
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                if (dataIdx != -1) {
+                    val p = cursor.getString(dataIdx)
+                    if (!p.isNullOrBlank() && File(p).exists()) return p
+                }
+                val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                if (nameIdx != -1) {
+                    val name = cursor.getString(nameIdx)
+                    val inDoc = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), name)
+                    if (inDoc.exists()) return inDoc.absolutePath
+                    val inDown = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), name)
+                    if (inDown.exists()) return inDown.absolutePath
+                    val inRootDoc = File(Environment.getExternalStorageDirectory(), "Documents/$name")
+                    if (inRootDoc.exists()) return inRootDoc.absolutePath
+                }
+            }
+        }
+    } catch (_: Exception) {}
+
+    val name = uri.lastPathSegment?.substringAfterLast("/")?.substringAfterLast(":") ?: ""
+    if (name.isNotBlank()) {
+        val inDoc = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), name)
+        if (inDoc.exists()) return inDoc.absolutePath
+        val inDown = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), name)
+        if (inDown.exists()) return inDown.absolutePath
+    }
+
     return null
 }
 
@@ -165,22 +205,66 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         mutableStateListOf(
             TowrChatMessage(
                 sender = MessageSender.TOWR,
-                messageText = "TOWR Executive Assistant aktif. Siap mengeksekusi berkas, aplikasi, dan instruksi Anda.",
+                messageText = "TOWR Executive Assistant aktif. Siap mengeksekusi berkas, WhatsApp, dan instruksi Anda.",
                 timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
             )
         )
     }
 
+    // Peluncur File Picker saat teks model diketuk
+    val modelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {}
+
+            coroutineScope.launch {
+                val realPath = resolveRealPathFromUri(context, uri)
+                if (realPath != null && File(realPath).exists()) {
+                    prefs.edit().putString("saved_gemma_model_path", realPath).apply()
+                    engineStatusText = "Memuat model..."
+                    val res = withContext(Dispatchers.IO) {
+                        gemmaEngine.loadModel(realPath)
+                    }
+                    val fileName = File(realPath).name
+                    engineStatusText = if (gemmaEngine.isModelLoaded) "Gemma: ${fileName.take(14)} (GPU)" else res
+                    Toast.makeText(context, "Model Gemma berhasil terhubung!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Lokasi berkas model tidak dapat dibaca.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // Muat otomatis dari path yang tersimpan permanen
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            val detectedPath = findModelPath()
-            if (detectedPath != null) {
-                val modelFile = File(detectedPath)
-                engineStatusText = "Memuat ${modelFile.name.take(15)}..."
-                val res = gemmaEngine.loadModel(detectedPath)
-                engineStatusText = if (gemmaEngine.isModelLoaded) "Gemma: ${modelFile.name.take(15)} (GPU)" else res
+            val savedPath = prefs.getString("saved_gemma_model_path", null)
+            if (!savedPath.isNullOrBlank() && File(savedPath).exists()) {
+                val fName = File(savedPath).name
+                engineStatusText = "Memuat ${fName.take(12)}..."
+                val res = gemmaEngine.loadModel(savedPath)
+                engineStatusText = if (gemmaEngine.isModelLoaded) "Gemma: ${fName.take(14)} (GPU)" else res
             } else {
-                engineStatusText = "Model .litertlm belum ada di Download/Documents"
+                val inDoc = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "gemma-4-E2B-it-gpu.litertlm")
+                val inDown = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "gemma-4-E2B-it-gpu.litertlm")
+                val fallbackPath = when {
+                    inDoc.exists() -> inDoc.absolutePath
+                    inDown.exists() -> inDown.absolutePath
+                    else -> null
+                }
+
+                if (fallbackPath != null) {
+                    prefs.edit().putString("saved_gemma_model_path", fallbackPath).apply()
+                    val fName = File(fallbackPath).name
+                    engineStatusText = "Memuat ${fName.take(12)}..."
+                    val res = gemmaEngine.loadModel(fallbackPath)
+                    engineStatusText = if (gemmaEngine.isModelLoaded) "Gemma: ${fName.take(14)} (GPU)" else res
+                } else {
+                    engineStatusText = "Ketuk untuk memilih model .litertlm"
+                }
             }
         }
     }
@@ -196,6 +280,9 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
             statusText = engineStatusText,
             isLoaded = gemmaEngine.isModelLoaded,
             isHybrid = hybridModeEnabled && apiKey.isNotBlank(),
+            onModelTextClick = {
+                modelPickerLauncher.launch(arrayOf("*/*"))
+            },
             onSettingsClick = { showSettingsDialog = true },
             onClearHistoryClick = {
                 messages.clear()
@@ -238,7 +325,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                             onConfirmDelete = { pendingInfo ->
                                 coroutineScope.launch {
                                     val deleteResult = withContext(Dispatchers.IO) {
-                                        actionRouter.executeConfirmedDelete(pendingInfo.filePath)
+                                        actionRouter.executeConfirmedDelete(pendingInfo)
                                     }
                                     val index = messages.indexOfFirst { it.id == msg.id }
                                     if (index != -1) {
@@ -255,7 +342,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                                 if (index != -1) {
                                     messages[index] = messages[index].copy(
                                         isActionResolved = true,
-                                        messageText = "Penghapusan berkas '${msg.pendingDelete?.fileName}' dibatalkan."
+                                        messageText = "Penghapusan ${msg.pendingDelete?.fileCount ?: 1} berkas dibatalkan."
                                     )
                                 }
                             }
@@ -282,11 +369,10 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         )
                     )
 
-                    // RESPONS PSIKOLOGIS INSTAN
                     val loadingMessageId = java.util.UUID.randomUUID().toString()
                     val isCloudActive = hybridModeEnabled && apiKey.isNotBlank()
-                    val loadingText = if (isCloudActive) "⚡ Perintah diterima, menghubungkan ke Gemini Flash Cloud..." 
-                                      else "⚡ Perintah diterima, mengeksekusi on-device engine..."
+                    val loadingText = if (isCloudActive) "⚡ Perintah diterima, menganalisis via Gemini Flash..." 
+                                      else "⚡ Perintah diterima, menganalisis via on-device engine..."
 
                     messages.add(
                         TowrChatMessage(
@@ -302,10 +388,10 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         listState.animateScrollToItem(messages.size - 1)
 
                         val startTime = System.currentTimeMillis()
-                        var aiOutput = ""
+                        var rawAiOutput = ""
                         var usedEngine = ""
+                        var cloudDiagnosticError = ""
 
-                        // MEMORI KONTEKS MULTI-TURN
                         val recentTurns = messages.takeLast(6).filter { !it.isLoading }
                         val historyBuilder = StringBuilder()
                         for (turn in recentTurns) {
@@ -313,21 +399,24 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                             historyBuilder.append("$role: ${turn.messageText}\n")
                         }
                         if (FileTools.lastSearchResults.isNotEmpty()) {
-                            historyBuilder.append("[KONTEKS TERAKHIR DI LAYAR]: Hasil pencarian terakhir '${FileTools.lastSearchQuery}' menampilkan ${FileTools.lastSearchResults.size} berkas.\n")
+                            historyBuilder.append("[KONTEKS TERAKHIR DI LAYAR]: Pencarian '${FileTools.lastSearchQuery}' baru saja menampilkan ${FileTools.lastSearchResults.size} berkas:\n")
+                            FileTools.lastSearchResults.take(5).forEachIndexed { i, f ->
+                                historyBuilder.append("  ${i + 1}. ${f.name}\n")
+                            }
                         }
 
                         val systemInstruction = """
                             Kamu adalah TOWR, asisten AI eksekutif Android on-device dan hybrid yang dibuat oleh Natanael.
                             PANDUAN:
-                            1. Jika pengguna meminta tindakan di HP, jawab HANYA dalam JSON:
+                            1. Jika pengguna meminta aksi sistem HP, jawab HANYA dalam format JSON satu baris:
                                - Cari file: {"action": "search_files", "query": "kata_kunci"}
-                               - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor"}
-                               - Buka app: {"action": "open_app", "app_name": "NamaApp"}
+                               - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_atau_keduanya"}
                                - WhatsApp: {"action": "share_wa", "contact_name": "NamaKontak", "text": "isi pesan"}
-                            2. Jika pertanyaan umum atau kontekstual ("apakah ini semuanya?"), jawab ramah berdasarkan riwayat obrolan tanpa format JSON.
+                               - Buka app: {"action": "open_app", "app_name": "NamaApp"}
+                            2. Jika pertanyaan umum, sapaan santai ("halo, siapakah kau"), atau pertanyaan konteks ("apakah sudah ini semuanya?"), jawab ramah secara manusiawi TANPA format JSON.
                         """.trimIndent()
 
-                        val response = withContext(Dispatchers.IO) {
+                        val finalRouterResponse = withContext(Dispatchers.IO) {
                             if (isCloudActive) {
                                 val cloudRes = GeminiCloudEngine.askGeminiFlash(
                                     apiKey = apiKey,
@@ -335,26 +424,34 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                                     conversationHistory = historyBuilder.toString(),
                                     userPrompt = promptText
                                 )
-                                if (!cloudRes.startsWith("ERROR") && !cloudRes.startsWith("Gagal terhubung")) {
-                                    aiOutput = cloudRes
+                                if (!cloudRes.startsWith("ERROR")) {
+                                    rawAiOutput = cloudRes
                                     usedEngine = "Gemini 1.5 Flash (Cloud)"
+                                } else {
+                                    cloudDiagnosticError = cloudRes
                                 }
                             }
 
-                            if (aiOutput.isBlank()) {
+                            if (rawAiOutput.isBlank()) {
                                 if (gemmaEngine.isModelLoaded) {
                                     val fullLocalPrompt = "$systemInstruction\n\n$historyBuilder\nPengguna: $promptText\nTOWR:"
-                                    aiOutput = gemmaEngine.askGemma(fullLocalPrompt)
-                                    usedEngine = "Gemma 2B INT4 (Local GPU)"
+                                    rawAiOutput = gemmaEngine.askGemma(fullLocalPrompt)
+                                    usedEngine = if (cloudDiagnosticError.isNotBlank()) "Gemma 2B (Fallback GPU)" else "Gemma 2B INT4 (Local GPU)"
                                 } else {
-                                    usedEngine = "Direct Action Router"
+                                    usedEngine = if (cloudDiagnosticError.isNotBlank()) "Direct Router (Cloud Error)" else "Direct Action Router"
                                 }
                             }
 
-                            if (aiOutput.isNotBlank()) {
-                                actionRouter.processInstruction(aiOutput)
+                            // Pemisahan Respon Alami vs Aksi Sistem
+                            if (rawAiOutput.isNotBlank() && rawAiOutput.contains("\"action\"")) {
+                                actionRouter.processInstruction(rawAiOutput)
+                            } else if (rawAiOutput.isNotBlank() && !rawAiOutput.startsWith("MODEL_NOT_READY")) {
+                                val prefixNotice = if (cloudDiagnosticError.isNotBlank()) "⚠️ $cloudDiagnosticError\n\n" else ""
+                                RouterResponse(message = prefixNotice + rawAiOutput)
                             } else {
-                                actionRouter.processInstruction(promptText)
+                                val fallbackNotice = if (cloudDiagnosticError.isNotBlank()) "⚠️ $cloudDiagnosticError\n\n" else ""
+                                val directRes = actionRouter.processInstruction(promptText)
+                                directRes.copy(message = fallbackNotice + directRes.message)
                             }
                         }
 
@@ -363,7 +460,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         val executionLog = listOf(
                             ToolExecutionLog(
                                 toolName = usedEngine,
-                                actionDetail = if (aiOutput.isNotBlank()) "Output: $aiOutput" else "Rule Pattern Executed",
+                                actionDetail = if (rawAiOutput.isNotBlank()) "Output: ${rawAiOutput.take(50)}" else (cloudDiagnosticError.ifBlank { "Pattern Matched" }),
                                 latencyMs = executionLatency,
                                 isSuccess = true
                             )
@@ -374,11 +471,11 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                             messages[loadingIndex] = TowrChatMessage(
                                 id = loadingMessageId,
                                 sender = MessageSender.TOWR,
-                                messageText = response.message,
+                                messageText = finalRouterResponse.message,
                                 timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                                 thinkingProcess = executionLog,
-                                foundFiles = response.files.ifEmpty { null },
-                                pendingDelete = response.pendingDelete,
+                                foundFiles = finalRouterResponse.files.ifEmpty { null },
+                                pendingDelete = finalRouterResponse.pendingDelete,
                                 isLoading = false
                             )
                         }
@@ -407,6 +504,7 @@ fun TowrTopBar(
     statusText: String,
     isLoaded: Boolean,
     isHybrid: Boolean,
+    onModelTextClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onClearHistoryClick: () -> Unit
 ) {
@@ -440,7 +538,11 @@ fun TowrTopBar(
 
                 Spacer(modifier = Modifier.width(10.dp))
 
-                Column(modifier = Modifier.weight(1f, fill = false)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clickable { onModelTextClick() }
+                ) {
                     Text(
                         text = "TOWR AGENT AI",
                         color = TowrTextPrimary,
@@ -449,8 +551,8 @@ fun TowrTopBar(
                         maxLines = 1
                     )
                     Text(
-                        text = statusText,
-                        color = if (isLoaded) TowrSkyBlue else TowrTextSecondary,
+                        text = if (isLoaded) statusText else "📁 $statusText (Ketuk untuk pilih)",
+                        color = if (isLoaded) TowrSkyBlue else Color(0xFFFFB74D),
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -643,11 +745,16 @@ fun ConfirmationDeleteCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Warning, contentDescription = "Peringatan", tint = TowrRedDanger, modifier = Modifier.size(20.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Konfirmasi Hapus Berkas", color = TowrRedDanger, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(pending.summaryTitle, color = TowrRedDanger, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Berkas: ${pending.fileName}", color = TowrTextPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Text("Ukuran: ${pending.fileSizeFormatted}", color = TowrTextSecondary, fontSize = 11.sp)
+
+            pending.files.take(3).forEach { f ->
+                Text("• ${f.name} (${f.size})", color = TowrTextPrimary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (pending.files.size > 3) {
+                Text("• ...dan ${pending.files.size - 3} berkas lainnya", color = TowrTextSecondary, fontSize = 11.sp)
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -674,11 +781,12 @@ fun ConfirmationDeleteCard(
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                     ) {
-                        Text("Hapus Sekarang", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        val btnText = if (pending.files.size > 1) "Hapus Semua (${pending.files.size} Berkas)" else "Hapus Sekarang"
+                        Text(btnText, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             } else {
-                Text("Aksi telah diselesaikan.", color = TowrTextSecondary, fontSize = 12.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                Text("Tindakan telah diselesaikan.", color = TowrTextSecondary, fontSize = 12.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
             }
         }
     }
@@ -848,9 +956,10 @@ fun TowrSettingsDialog(
                     OutlinedTextField(
                         value = localKey,
                         onValueChange = { localKey = it },
-                        label = { Text("Gemini API Key (Gratis)", fontSize = 11.sp) },
+                        label = { Text("Gemini API Key (Google AI Studio)", fontSize = 11.sp) },
+                        placeholder = { Text("Masukkan API Key resmi Anda", fontSize = 11.sp, color = TowrTextSecondary) },
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
+                        maxLines = 3,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = TowrTextPrimary,
                             unfocusedTextColor = TowrTextPrimary,
