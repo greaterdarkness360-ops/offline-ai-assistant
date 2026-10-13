@@ -10,6 +10,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 @Serializable
 data class AgentAction(
@@ -19,7 +23,6 @@ data class AgentAction(
     val min_size_mb: Double? = null,
     val max_size_mb: Double? = null,
     val sort_by: String? = null,
-    val max_age_hours: Long? = null,
     val app_name: String? = null,
     val folder: String? = null,
     val delete_duplicates: Boolean? = false,
@@ -29,111 +32,73 @@ data class AgentAction(
     val text: String? = null,
     val file_path: String? = null,
     val title: String? = null,
-    val content: String? = null,
-    val contact_name: String? = null,
-    val phone_number: String? = null
+    val content: String? = null
 )
-
-data class PendingDeleteInfo(
-    val files: List<FileItemInfo>,
-    val summaryTitle: String
-) {
-    val fileCount: Int get() = files.size
-    val fileName: String get() = if (files.size == 1) files[0].name else "${files.size} berkas (${files.take(2).joinToString { it.name }}${if (files.size > 2) "..." else ""})"
-    val fileSizeFormatted: String get() = if (files.size == 1) files[0].size else "Total ${files.size} berkas"
-}
 
 data class RouterResponse(
     val message: String,
-    val files: List<FileItemInfo> = emptyList(),
-    val pendingDelete: PendingDeleteInfo? = null
+    val files: List<FileItemInfo> = emptyList()
 )
 
-class ActionRouter(context: Context) {
+class ActionRouter(private val context: Context) {
 
     val fileTools = FileTools(context)
     private val appLauncherTool = AppLauncherTool(context)
     private val usageStatsTool = UsageStatsTool(context)
     private val shareBridgeTool = ShareBridgeTool(context)
 
-    private val jsonParser = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
+    private val prefs = context.getSharedPreferences("towr_prefs", Context.MODE_PRIVATE)
+
+    private val jsonParser = Json { 
+        ignoreUnknownKeys = true 
+        isLenient = true 
     }
 
     suspend fun processInstruction(input: String): RouterResponse = withContext(Dispatchers.IO) {
         val trimmed = input.trim()
 
-        // 1. Ekstraksi Multi-JSON: Mampu membaca jika AI mengeluarkan lebih dari satu JSON sekaligus
-        val jsonPayloads = extractAllJsonPayloads(trimmed)
-        if (jsonPayloads.isNotEmpty()) {
+        val cleanJson = extractJsonPayload(trimmed)
+        if (cleanJson != null) {
             return@withContext try {
-                val parsedActions = jsonPayloads.mapNotNull { raw ->
-                    try { jsonParser.decodeFromString<AgentAction>(raw) } catch (_: Exception) { null }
-                }
-
-                if (parsedActions.isEmpty()) {
-                    RouterResponse("Gagal membaca struktur aksi JSON.")
-                } else if (parsedActions.size == 1) {
-                    executeJsonAction(parsedActions[0], originalInput = trimmed)
-                } else {
-                    executeMultipleActions(parsedActions, originalInput = trimmed)
-                }
+                val parsedAction = jsonParser.decodeFromString<AgentAction>(cleanJson)
+                executeJsonAction(parsedAction)
             } catch (e: Exception) {
-                RouterResponse("Gagal mengeksekusi aksi: ${e.localizedMessage}")
+                RouterResponse("Gagal membaca aksi JSON: ${e.localizedMessage}")
             }
         }
 
         val lower = trimmed.lowercase()
 
         when {
-            // DETEKSI PESAN & KONTAK WHATSAPP
-            lower.contains("wa") || lower.contains("whatsapp") -> {
-                val match = Regex("(?i)(?:kirim|chat|buka|pesan)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_\\s]+?)(?:\\s*[:,-]\\s*|\\s+pesan\\s+|\\s+isi\\s+)(.*)").find(trimmed)
-
-                if (match != null) {
-                    val contactTarget = match.groupValues[1].trim()
-                    val messageBody = match.groupValues[2].trim()
-                    RouterResponse(shareBridgeTool.shareTextToApp(text = messageBody, targetApp = "whatsapp", contactName = contactTarget))
-                } else {
-                    val contactOnly = Regex("(?i)(?:chat|buka|kirim)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_]+)").find(trimmed)?.groupValues?.get(1)?.trim() ?: ""
-                    if (contactOnly.isNotBlank() && contactOnly.lowercase() !in listOf("pesan", "aplikasi", "chat")) {
-                        RouterResponse(shareBridgeTool.shareTextToApp(text = "", targetApp = "whatsapp", contactName = contactOnly))
-                    } else {
-                        val generalText = trimmed.replace(Regex("(?i)^(kirim ke wa|kirim wa|whatsapp|wa)\\s*[:,-]?\\s*"), "")
-                        RouterResponse(shareBridgeTool.shareTextToApp(text = generalText, targetApp = "whatsapp"))
-                    }
-                }
+            // PINTASAN INSTAN CEK EMAIL
+            lower.contains("cek email") || lower.contains("email masuk") || lower.contains("baca email") || lower.contains("ada email") -> {
+                RouterResponse(fetchEmailsFromGas(null))
             }
 
-            // PERINTAH HAPUS BERKAS (TUNGGAL ATAU MASSAL)
-            lower.startsWith("hapus") || lower.contains("hapus file") || lower.contains("delete") -> {
-                if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("kembar")) {
+            // EKSEKUSI PENGHAPUSAN FILE BERDASARKAN NAMA
+            lower.startsWith("hapus file") || lower.startsWith("hapus") -> {
+                if (lower.contains("ganda") || lower.contains("duplikat")) {
                     val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
                     RouterResponse(msg)
                 } else {
                     val targetName = trimmed
-                        .replace(Regex("(?i)^(hapus semua file|hapus semua|hapus file|hapus|delete)\\s*"), "")
-                        .replace(Regex("(?i)(semua file|semua|yang bernama|file|berkas)\\s*"), "")
+                        .replace(Regex("(?i)^(hapus file|hapus)\\s*"), "")
+                        .replace(Regex("(?i)(semua|yang bernama|file|berkas)\\s*"), "")
                         .trim()
 
-                    if (targetName.isBlank() || targetName.lowercase() in listOf("semua", "keduanya", "seluruhnya", "hasil")) {
-                        if (FileTools.lastSearchResults.isNotEmpty()) {
-                            val targets = FileTools.lastSearchResults.toList()
-                            RouterResponse(
-                                message = "Peringatan Keamanan: Apakah Anda yakin ingin menghapus ${targets.size} berkas dari hasil pencarian?",
-                                pendingDelete = PendingDeleteInfo(
-                                    files = targets,
-                                    summaryTitle = "Konfirmasi Hapus ${targets.size} Berkas Sekaligus"
-                                )
-                            )
-                        } else {
-                            RouterResponse("Tidak ada daftar berkas aktif di layar untuk dihapus.")
-                        }
+                    if (targetName.isBlank()) {
+                        RouterResponse("Sebutkan nama file yang ingin dihapus.")
                     } else {
-                        prepareDeleteGuardrail(targetName)
+                        val msg = fileTools.deleteFileByName(targetName)
+                        RouterResponse(msg)
                     }
                 }
+            }
+
+            // KIRIM PESAN WHATSAPP
+            lower.contains("whatsapp") || lower.contains("wa") -> {
+                val waText = trimmed.replace(Regex("(?i)^(kirim ke wa|kirim wa|wa|whatsapp)\\s*[:,-]?\\s*"), "")
+                RouterResponse(shareBridgeTool.shareTextToApp(waText, "whatsapp"))
             }
 
             lower.contains("telegram") || lower.contains("tele") -> {
@@ -159,8 +124,8 @@ class ActionRouter(context: Context) {
 
             lower.contains("pdf") && (lower.contains("satukan") || lower.contains("ubah") || lower.contains("gabung")) -> {
                 val imageList = extractImageNames(trimmed)
-                val msg = if (imageList.isEmpty()) "Sebutkan nama file gambar (contoh: foto1.jpg, foto2.jpg)."
-                else fileTools.convertImagesToPdf(imageList, "Dokumen_TOWR.pdf")
+                val msg = if (imageList.isEmpty()) "Sebutkan nama file gambar (contoh: foto1.jpg, foto2.jpg)." 
+                          else fileTools.convertImagesToPdf(imageList, "Dokumen_TOWR.pdf")
                 RouterResponse(msg)
             }
 
@@ -168,25 +133,10 @@ class ActionRouter(context: Context) {
                 RouterResponse(usageStatsTool.getRecentUsageSummary())
             }
 
-            // PENCARIAN BERKAS DENGAN FILTER WAKTU 24 JAM & FOLDER UNDUHAN
-            lower.startsWith("cari") || lower.startsWith("temukan") || lower.startsWith("list") || lower.contains("24 jam") || lower.contains("hari ini") -> {
+            lower.startsWith("cari file") || lower.startsWith("cari") || lower.startsWith("temukan") -> {
                 var minMb: Double? = null
                 var maxMb: Double? = null
                 var sortBy: String? = null
-                var maxAgeHours: Long? = null
-                var folderFilter: String? = null
-
-                if (Regex("(24\\s*jam|sehari|hari ini|1\\s*hari)", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
-                    maxAgeHours = 24L
-                } else if (Regex("(1\\s*jam|sejam)", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
-                    maxAgeHours = 1L
-                } else if (Regex("(7\\s*hari|seminggu)", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
-                    maxAgeHours = 168L
-                }
-
-                if (Regex("(ku\\s*download|di\\s*download|unduhan|download)", RegexOption.IGNORE_CASE).containsMatchIn(lower)) {
-                    folderFilter = "Download"
-                }
 
                 val sizeMatch = Regex("(lebih dari|>|di atas)\\s*(\\d+)\\s*(mb|megabyte)", RegexOption.IGNORE_CASE).find(lower)
                 if (sizeMatch != null) minMb = sizeMatch.groupValues[2].toDoubleOrNull()
@@ -195,36 +145,20 @@ class ActionRouter(context: Context) {
                 if (smallerMatch != null) maxMb = smallerMatch.groupValues[2].toDoubleOrNull()
 
                 if (lower.contains("paling lama") || lower.contains("terlama")) sortBy = "oldest"
-                if (lower.contains("paling baru") || lower.contains("terbaru") || maxAgeHours != null) sortBy = "newest"
+                if (lower.contains("paling baru") || lower.contains("terbaru")) sortBy = "newest"
                 if (lower.contains("paling besar") || lower.contains("terbesar")) sortBy = "largest"
 
                 val cleanQuery = trimmed
-                    .replace(Regex("(?i)^(cari file|cari|temukan|list semua file|list semua|list)\\s*"), "")
-                    .replace(Regex("(?i)(yang\\s+ku\\s+download|yang\\s+di\\s*download|yang\\s+baru\\s+di\\s*download|di\\s*download|ku\\s*download|unduhan|download)"), "")
-                    .replace(Regex("(?i)(24\\s*jam\\s*terakhir|24\\s*jam|hari\\s*ini|kemarin|terbaru|paling\\s*baru|terakhir)"), "")
-                    .replace(Regex("(?i)(yang|berukuran|lebih\\s*dari|kurang\\s*dari|di\\s*atas|di\\s*bawah|\\d+\\s*mb|file|berkas)"), "")
+                    .replace(Regex("(?i)^(cari file|cari|temukan)\\s*"), "")
+                    .replace(Regex("(?i)(yang|berukuran|lebih dari|kurang dari|di atas|di bawah|\\d+\\s*mb|paling lama|paling baru|paling besar|terlama|terbaru|terbesar)"), "")
                     .trim()
 
-                val foundFiles = fileTools.searchFilesAdvanced(
-                    query = cleanQuery,
-                    minSizeMb = minMb,
-                    maxSizeMb = maxMb,
-                    sortBy = sortBy,
-                    maxAgeHours = maxAgeHours,
-                    folderFilter = folderFilter
-                )
-
-                val label = when {
-                    cleanQuery.isNotBlank() && maxAgeHours != null -> "berkas '$cleanQuery' (24 jam terakhir)"
-                    cleanQuery.isNotBlank() -> "berkas '$cleanQuery'"
-                    maxAgeHours != null -> "berkas unduhan dalam $maxAgeHours jam terakhir"
-                    else -> "berkas terbaru"
-                }
+                val foundFiles = fileTools.searchFilesAdvanced(cleanQuery, minMb, maxMb, sortBy)
 
                 if (foundFiles.isEmpty()) {
-                    RouterResponse("Ditemukan 0 $label yang memenuhi kriteria.")
+                    RouterResponse("Tidak ditemukan file yang memenuhi kriteria pencarian.")
                 } else {
-                    RouterResponse("Ditemukan ${foundFiles.size} $label:", foundFiles)
+                    RouterResponse("Ditemukan ${foundFiles.size} file yang cocok:", foundFiles)
                 }
             }
 
@@ -234,36 +168,22 @@ class ActionRouter(context: Context) {
         }
     }
 
-    private suspend fun executeJsonAction(action: AgentAction, originalInput: String): RouterResponse {
-        val actionName = action.action.lowercase()
-
-        return when (actionName) {
-            "share_wa", "send_whatsapp", "open_whatsapp" -> {
-                val targetContact = (action.contact_name ?: action.phone_number ?: "").trim()
-                val msg = action.text ?: ""
-                RouterResponse(shareBridgeTool.shareTextToApp(text = msg, targetApp = "whatsapp", contactName = targetContact.ifBlank { null }))
+    private suspend fun executeJsonAction(action: AgentAction): RouterResponse {
+        return when (action.action.lowercase()) {
+            // INTEGRASI EMAIL (GOOGLE APPS SCRIPT)
+            "check_email", "fetch_emails", "get_emails", "read_emails", "list_emails", "email" -> {
+                RouterResponse(fetchEmailsFromGas(action.query))
             }
             "delete_file" -> {
                 val target = action.file_name ?: action.query ?: ""
-                prepareDeleteGuardrail(target)
+                RouterResponse(fileTools.deleteFileByName(target))
             }
             "search_files" -> {
-                var q = action.query ?: action.file_name ?: ""
-                var ageHours = action.max_age_hours
-                var folder = action.folder
-
-                if (q.contains("24 jam", ignoreCase = true) || q.contains("hari ini", ignoreCase = true)) {
-                    ageHours = 24L
-                    q = q.replace(Regex("(?i)(24\\s*jam\\s*terakhir|24\\s*jam|hari\\s*ini|download)"), "").trim()
-                }
-
                 val list = fileTools.searchFilesAdvanced(
-                    query = q,
+                    query = action.query ?: action.file_name ?: "",
                     minSizeMb = action.min_size_mb,
                     maxSizeMb = action.max_size_mb,
-                    sortBy = action.sort_by,
-                    maxAgeHours = ageHours,
-                    folderFilter = folder
+                    sortBy = action.sort_by
                 )
                 RouterResponse("Ditemukan ${list.size} file:", list)
             }
@@ -278,6 +198,7 @@ class ActionRouter(context: Context) {
             "images_to_pdf" -> RouterResponse(fileTools.convertImagesToPdf(action.images ?: emptyList(), action.output_pdf ?: "TOWR_Result.pdf"))
             "open_app" -> RouterResponse(appLauncherTool.openAppByName(action.app_name ?: ""))
             "inspect_usage" -> RouterResponse(usageStatsTool.getRecentUsageSummary())
+            "share_wa" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", "whatsapp"))
             "share_text" -> RouterResponse(shareBridgeTool.shareTextToApp(action.text ?: "", action.target_app ?: "general"))
             "share_file" -> RouterResponse(shareBridgeTool.shareFileToApp(action.file_path ?: "", action.target_app ?: "general"))
             "save_note_for_notion" -> RouterResponse(shareBridgeTool.saveNoteForNotion(action.title ?: "Catatan", action.content ?: ""))
@@ -285,49 +206,101 @@ class ActionRouter(context: Context) {
         }
     }
 
-    private fun executeMultipleActions(actions: List<AgentAction>, originalInput: String): RouterResponse {
-        val deleteTargets = mutableListOf<FileItemInfo>()
+    private suspend fun fetchEmailsFromGas(query: String?): String = withContext(Dispatchers.IO) {
+        val rawUrl = prefs.getString("gas_webhook_url", "")?.trim() ?: ""
+        if (rawUrl.isBlank()) {
+            return@withContext "⚠️ URL Webhook GAS belum diisi.\n\nBuka Pengaturan [⚙️] di kanan atas dan tempelkan Webhook URL dari Google Apps Script Anda."
+        }
+        if (!rawUrl.endsWith("/exec")) {
+            return@withContext "⚠️ URL Webhook GAS harus berakhiran '/exec'.\n\nURL tersimpan saat ini: $rawUrl\nSilakan periksa kembali tautan Web App Anda di menu Pengaturan [⚙️]."
+        }
 
-        for (act in actions) {
-            if (act.action.lowercase() == "delete_file") {
-                val targetRef = act.file_name ?: act.query ?: ""
-                val resolved = fileTools.resolveTargetFiles(targetRef)
-                deleteTargets.addAll(resolved)
+        try {
+            val qParam = if (!query.isNullOrBlank()) "&q=" + URLEncoder.encode(query, "UTF-8") else ""
+            val targetUrl = "$rawUrl?action=get_inbox$qParam"
+
+            val responseBody = executeHttpGetWithRedirect(targetUrl)
+            parseGasEmailResponse(responseBody)
+        } catch (e: Exception) {
+            "❌ Gagal mengambil email dari Google Apps Script:\n${e.localizedMessage ?: "Koneksi terputus atau timeout."}"
+        }
+    }
+
+    private fun executeHttpGetWithRedirect(initialUrl: String): String {
+        var currentUrl = initialUrl
+        var redirects = 0
+        while (redirects < 5) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15000
+                readTimeout = 15000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "TOWR-Android-Assistant")
+                setRequestProperty("Accept", "application/json")
+            }
+
+            val code = conn.responseCode
+            if (code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                code == HttpURLConnection.HTTP_MOVED_PERM ||
+                code == 307 || code == 308) {
+                val newLocation = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (!newLocation.isNullOrBlank()) {
+                    currentUrl = newLocation
+                    redirects++
+                    continue
+                }
+            }
+
+            if (code in 200..299) {
+                val response = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+                return response
+            } else {
+                val errStream = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                conn.disconnect()
+                throw Exception("Server GAS merespons HTTP $code: $errStream")
             }
         }
-
-        val uniqueTargets = deleteTargets.distinctBy { it.path }
-        return if (uniqueTargets.isNotEmpty()) {
-            RouterResponse(
-                message = "Peringatan Keamanan: Apakah Anda yakin ingin menghapus ${uniqueTargets.size} berkas ini?",
-                pendingDelete = PendingDeleteInfo(
-                    files = uniqueTargets,
-                    summaryTitle = "Konfirmasi Hapus ${uniqueTargets.size} Berkas Sekaligus"
-                )
-            )
-        } else {
-            RouterResponse("Tidak ditemukan berkas target yang sesuai untuk dihapus.")
-        }
+        throw Exception("Terlalu banyak pengalihan (redirect) dari Google Apps Script.")
     }
 
-    private fun prepareDeleteGuardrail(targetReference: String): RouterResponse {
-        val targets = fileTools.resolveTargetFiles(targetReference)
-        return if (targets.isNotEmpty()) {
-            val title = if (targets.size == 1) "Konfirmasi Hapus: '${targets[0].name}'" else "Konfirmasi Hapus ${targets.size} Berkas Sekaligus"
-            RouterResponse(
-                message = "Peringatan Keamanan: Apakah Anda yakin ingin menghapus ${targets.size} berkas ini?",
-                pendingDelete = PendingDeleteInfo(
-                    files = targets,
-                    summaryTitle = title
-                )
-            )
-        } else {
-            RouterResponse("Berkas '$targetReference' tidak ditemukan di penyimpanan.")
-        }
-    }
+    private fun parseGasEmailResponse(jsonString: String): String {
+        return try {
+            val root = JSONObject(jsonString)
+            val status = root.optString("status", "")
+            if (status != "success") {
+                val errMsg = root.optString("message", "Terjadi kendala pada skrip GAS.")
+                return "⚠️ Respon Google Apps Script: $errMsg"
+            }
 
-    fun executeConfirmedDelete(pendingInfo: PendingDeleteInfo): String {
-        return fileTools.deletePhysicalFiles(pendingInfo.files.map { it.path })
+            val emailsArray = root.optJSONArray("emails")
+            val count = emailsArray?.length() ?: 0
+            if (count == 0) {
+                return "📬 Kotak Masuk Bersih!\nTidak ada email belum dibaca di akun Google Anda."
+            }
+
+            val sb = StringBuilder()
+            sb.append("📬 Ditemukan $count Email Masuk Terbaru:\n\n")
+
+            for (i in 0 until count) {
+                val emailObj = emailsArray!!.getJSONObject(i)
+                val from = emailObj.optString("from", "Pengirim Tidak Diketahui")
+                val subject = emailObj.optString("subject", "(Tanpa Subjek)")
+                val snippet = emailObj.optString("snippet", "")
+
+                sb.append("📩 [${i + 1}] $subject\n")
+                sb.append("   • Dari: $from\n")
+                if (snippet.isNotBlank()) {
+                    val cleanSnippet = snippet.take(120).replace("\n", " ").trim()
+                    sb.append("   • Cuplikan: \"$cleanSnippet...\"\n")
+                }
+                if (i < count - 1) sb.append("\n")
+            }
+            sb.toString()
+        } catch (e: Exception) {
+            "Respon GAS diterima namun format tidak standar:\n${jsonString.take(300)}"
+        }
     }
 
     private fun extractImageNames(text: String): List<String> {
@@ -335,8 +308,15 @@ class ActionRouter(context: Context) {
         return regex.findAll(text).map { it.value }.toList()
     }
 
-    private fun extractAllJsonPayloads(text: String): List<String> {
-        val regex = Regex("\\{[^{}]*\"action\"[^{}]*\\}")
-        return regex.findAll(text).map { it.value.trim() }.toList()
+    private fun extractJsonPayload(text: String): String? {
+        val start = text.indexOf('{')
+        val end = text.lastIndexOf('}')
+        if (start != -1 && end != -1 && end > start) {
+            val candidate = text.substring(start, end + 1).trim()
+            if (candidate.contains("\"action\"")) {
+                return candidate
+            }
+        }
+        return null
     }
 }
