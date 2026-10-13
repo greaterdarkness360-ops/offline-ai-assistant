@@ -18,23 +18,23 @@ object GeminiCloudEngine {
         conversationHistory: String,
         userPrompt: String
     ): String = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) {
-            return@withContext "ERROR: API Key Gemini belum diisi di Pengaturan."
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isBlank()) {
+            return@withContext "ERROR: API Key Gemini belum diatur di menu Pengaturan [⚙️]."
         }
 
         try {
-            val urlString = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
+            val urlString = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$cleanKey"
             val url = URL(urlString)
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 15000
+            conn.connectTimeout = 8000
+            conn.readTimeout = 12000
             conn.doOutput = true
 
             val fullInstruction = buildString {
                 append(systemPrompt)
-                append("\n\nKamu saat ini terhubung langsung secara online ke Google Gemini 1.5 Flash Cloud.")
                 if (conversationHistory.isNotBlank()) {
                     append("\n\n[RIWAYAT OBROLAN]:\n")
                     append(conversationHistory)
@@ -76,11 +76,11 @@ object GeminiCloudEngine {
                 val errorStream = conn.errorStream
                 val errorMsg = if (errorStream != null) {
                     BufferedReader(InputStreamReader(errorStream, "UTF-8")).readText()
-                } else "Kode respons: $responseCode"
-                "Gagal terhubung ke Gemini Flash (HTTP $responseCode): $errorMsg"
+                } else "Kode respons HTTP $responseCode"
+                "ERROR: Gagal terhubung ke Gemini Flash (HTTP $responseCode): $errorMsg"
             }
         } catch (e: Exception) {
-            "Kendala jaringan Gemini Flash: ${e.localizedMessage}"
+            "ERROR: Kendala koneksi Gemini Flash: ${e.localizedMessage}"
         }
     }
 }
