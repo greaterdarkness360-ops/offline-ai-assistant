@@ -57,6 +57,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -203,7 +205,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         mutableStateListOf(
             TowrChatMessage(
                 sender = MessageSender.TOWR,
-                messageText = "TOWR Executive Assistant aktif. Siap mengeksekusi berkas, WhatsApp, dan instruksi Anda.",
+                messageText = "TOWR Executive Assistant aktif. Siap mengeksekusi berkas, WhatsApp, dan email Anda.",
                 timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
             )
         )
@@ -418,6 +420,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                             1. Jika pengguna meminta aksi sistem HP, jawab HANYA dalam format JSON satu baris:
                                - Cari file: {"action": "search_files", "query": "kata_kunci"}
                                - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_atau_semua"}
+                               - Cek email masuk: {"action": "check_email", "query": "is:unread"}
                                - WhatsApp: {"action": "share_wa", "contact_name": "NamaKontak", "text": "isi pesan"}
                                - Buka app: {"action": "open_app", "app_name": "NamaApp"}
                             2. Jika pertanyaan umum, sapaan santai ("halo, siapakah kau"), atau pertanyaan evaluasi konteks ("apakah sudah ini semuanya?"), jawab ramah secara manusiawi TANPA format JSON.
@@ -583,7 +586,6 @@ fun TowrTopBar(
                     Icon(Icons.Default.Delete, contentDescription = "Hapus Riwayat", tint = TowrTextSecondary, modifier = Modifier.size(19.dp))
                 }
 
-                // Badge Interaktif (Bisa diketuk untuk tes diagnosa realtime)
                 if (isHybrid) {
                     Row(
                         modifier = Modifier
@@ -623,6 +625,7 @@ fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
     val quickActions = listOf(
         Pair("🔍 Cari File...", "cari file "),
         Pair("⏰ 24 Jam Terakhir", "cari file paling baru 24 jam terakhir"),
+        Pair("📬 Cek Email", "cek email masuk"),
         Pair("📑 File Duplikat", "file ganda"),
         Pair("📱 Pemakaian HP", "pemakaian aplikasi"),
         Pair("💬 Chat WhatsApp", "kirim wa ke ")
@@ -930,7 +933,7 @@ fun TowrInputBar(
 }
 
 // =========================================================================
-// 8. DIALOG PENGATURAN DENGAN FITUR TES DIAGNOSA REALTIME
+// 8. DIALOG PENGATURAN TOWR LENGKAP: WEBHOOK GAS + GEMINI CLOUD + SUHU
 // =========================================================================
 @Composable
 fun TowrSettingsDialog(
@@ -941,6 +944,7 @@ fun TowrSettingsDialog(
 
     var localKey by remember { mutableStateOf(prefs.getString("gemini_api_key", "") ?: "") }
     var localModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-3.8-flash") ?: "gemini-3.8-flash") }
+    var localWebhook by remember { mutableStateOf(prefs.getString("gas_webhook_url", "") ?: "") }
     var localHybrid by remember { mutableStateOf(prefs.getBoolean("hybrid_mode_enabled", false)) }
     var temp by remember { mutableStateOf(prefs.getFloat("ai_temperature", 0.8f)) }
 
@@ -958,7 +962,30 @@ fun TowrSettingsDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // 1. Kolom Webhook Google Apps Script (P3 Email Automation)
+                Text("Otomatisasi Cloud (Google Apps Script):", color = TowrTextSecondary, fontSize = 12.sp)
+                OutlinedTextField(
+                    value = localWebhook,
+                    onValueChange = { localWebhook = it },
+                    label = { Text("Webhook URL GAS (script.google.com)", fontSize = 11.sp) },
+                    placeholder = { Text("https://script.google.com/macros/s/.../exec", fontSize = 10.sp, color = TowrTextSecondary) },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 2,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TowrTextPrimary,
+                        unfocusedTextColor = TowrTextPrimary,
+                        focusedBorderColor = TowrElectricCyan,
+                        unfocusedBorderColor = TowrBorderDim
+                    )
+                )
+
+                // 2. Mode Hybrid Cloud Gemini
                 Text("Mode Hybrid Cloud (Gemini Free Tier):", color = TowrTextSecondary, fontSize = 12.sp)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1003,7 +1030,6 @@ fun TowrSettingsDialog(
                         )
                     )
 
-                    // TOMBOL TES DIAGNOSTIK REALTIME
                     Button(
                         onClick = {
                             isTestingConnection = true
@@ -1024,10 +1050,9 @@ fun TowrSettingsDialog(
                             CircularProgressIndicator(color = TowrElectricCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
                         }
-                        Text("⚡ Tes Koneksi Cloud Sekarang", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("⚡ Tes Koneksi Cloud", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    // TAMPILAN STATUS HASIL DIAGNOSTIK
                     if (testStatusText.isNotBlank()) {
                         Text(
                             text = testStatusText,
@@ -1055,6 +1080,7 @@ fun TowrSettingsDialog(
             Button(
                 onClick = {
                     prefs.edit()
+                        .putString("gas_webhook_url", localWebhook.trim())
                         .putString("gemini_api_key", localKey.trim())
                         .putString("gemini_selected_model", localModel.trim().ifBlank { "gemini-3.8-flash" })
                         .putBoolean("hybrid_mode_enabled", localHybrid)
