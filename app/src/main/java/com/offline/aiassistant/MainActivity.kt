@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -57,8 +58,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -933,7 +932,7 @@ fun TowrInputBar(
 }
 
 // =========================================================================
-// 8. DIALOG PENGATURAN TOWR LENGKAP: WEBHOOK GAS + GEMINI CLOUD + SUHU
+// 8. DIALOG PENGATURAN TOWR LENGKAP: SCROLLABLE & BEBAS TERTUTUP
 // =========================================================================
 @Composable
 fun TowrSettingsDialog(
@@ -962,18 +961,19 @@ fun TowrSettingsDialog(
             }
         },
         text = {
+            // Kolom dapat digulir bebas (verticalScroll) agar tidak tertutup di layar HP
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 440.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // 1. Kolom Webhook Google Apps Script (P3 Email Automation)
+                // 1. Kolom Webhook Google Apps Script (P3 Email)
                 Text("Otomatisasi Cloud (Google Apps Script):", color = TowrTextSecondary, fontSize = 12.sp)
                 OutlinedTextField(
                     value = localWebhook,
                     onValueChange = { localWebhook = it },
-                    label = { Text("Webhook URL GAS (script.google.com)", fontSize = 11.sp) },
+                    label = { Text("Webhook URL GAS (akhiri /exec)", fontSize = 11.sp) },
                     placeholder = { Text("https://script.google.com/macros/s/.../exec", fontSize = 10.sp, color = TowrTextSecondary) },
                     modifier = Modifier.fillMaxWidth(),
                     maxLines = 2,
@@ -1030,6 +1030,7 @@ fun TowrSettingsDialog(
                         )
                     )
 
+                    // Tombol Tes Diagnostik Realtime
                     Button(
                         onClick = {
                             isTestingConnection = true
@@ -1050,30 +1051,54 @@ fun TowrSettingsDialog(
                             CircularProgressIndicator(color = TowrElectricCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
                         }
-                        Text("⚡ Tes Koneksi Cloud", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("⚡ Tes Koneksi Cloud Sekarang", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
+                    // Tampilan Hasil Diagnostik dalam Kotak Khusus yang Jelas & Terbuka
                     if (testStatusText.isNotBlank()) {
-                        Text(
-                            text = testStatusText,
-                            color = when {
-                                testStatusText.startsWith("🟢") -> TowrEmeraldGreen
-                                testStatusText.startsWith("🟡") -> Color(0xFFFFB74D)
-                                else -> TowrRedDanger
-                            },
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp
-                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(TowrSurfaceElevated)
+                                .border(
+                                    1.dp,
+                                    when {
+                                        testStatusText.startsWith("🟢") -> TowrEmeraldGreen
+                                        testStatusText.startsWith("🟡") -> Color(0xFFFFB74D)
+                                        else -> TowrRedDanger
+                                    },
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = testStatusText,
+                                color = when {
+                                    testStatusText.startsWith("🟢") -> TowrEmeraldGreen
+                                    testStatusText.startsWith("🟡") -> Color(0xFFFFB74D)
+                                    else -> TowrRedDanger
+                                },
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
+                            )
+                        }
                     }
                 }
 
-                Text("Temperatur AI: ${String.format(Locale.US, "%.1f", temp)}", color = TowrTextSecondary, fontSize = 12.sp)
-                Slider(
-                    value = temp,
-                    onValueChange = { temp = it },
-                    valueRange = 0.1f..1.0f,
-                    colors = SliderDefaults.colors(thumbColor = TowrElectricCyan, activeTrackColor = TowrSkyBlue)
-                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // 3. Kontrol Suhu AI (Kreativitas vs Kepastian Jawaban)
+                Column {
+                    Text("Temperatur AI: ${String.format(Locale.US, "%.1f", temp)}", color = TowrTextSecondary, fontSize = 12.sp)
+                    Text("0.1 = Sangat teliti & patuh perintah | 0.8 = Percakapan luwes seimbang", color = TowrBorderDim, fontSize = 10.sp)
+                    Slider(
+                        value = temp,
+                        onValueChange = { temp = it },
+                        valueRange = 0.1f..1.0f,
+                        colors = SliderDefaults.colors(thumbColor = TowrElectricCyan, activeTrackColor = TowrSkyBlue)
+                    )
+                }
             }
         },
         confirmButton = {
