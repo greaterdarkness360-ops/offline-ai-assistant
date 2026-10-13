@@ -56,7 +56,7 @@ class ShareBridgeTool(private val context: Context) {
     }
 
     /**
-     * 1. Membagikan teks/pesan langsung ke WhatsApp (ke kontak langsung), Telegram, atau Notion
+     * Membagikan teks/pesan langsung ke WhatsApp (ke kontak langsung), Telegram, atau Notion
      */
     fun shareTextToApp(text: String, targetApp: String = "general", contactName: String? = null): String {
         return try {
@@ -70,7 +70,7 @@ class ShareBridgeTool(private val context: Context) {
                     val formattedPhone = formatPhoneForWhatsApp(rawPhone)
                     val encodedText = Uri.encode(text)
 
-                    // URL API WhatsApp untuk langsung membuka chat kontak
+                    // URL API WhatsApp resmi untuk membuka chat kontak seketika
                     val directUri = Uri.parse("https://api.whatsapp.com/send?phone=$formattedPhone&text=$encodedText")
                     val directIntent = Intent(Intent.ACTION_VIEW, directUri).apply {
                         setPackage("com.whatsapp")
@@ -81,7 +81,6 @@ class ShareBridgeTool(private val context: Context) {
                         context.startActivity(directIntent)
                         "Membuka chat WhatsApp langsung ke $realName ($formattedPhone) dengan pesan: '$text'"
                     } catch (e: Exception) {
-                        // Jika WhatsApp standar gagal, coba buka tanpa setPackage (misal WhatsApp Business)
                         val fallbackIntent = Intent(Intent.ACTION_VIEW, directUri).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
@@ -127,9 +126,6 @@ class ShareBridgeTool(private val context: Context) {
         }
     }
 
-    /**
-     * 2. Membagikan berkas (PDF, Foto, Video)
-     */
     fun shareFileToApp(filePath: String, targetApp: String = "general"): String {
         return try {
             val file = File(filePath)
@@ -163,9 +159,6 @@ class ShareBridgeTool(private val context: Context) {
         }
     }
 
-    /**
-     * 3. Menyimpan catatan khusus format Notion (.md Markdown)
-     */
     fun saveNoteForNotion(title: String, content: String): String {
         return try {
             val docDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
