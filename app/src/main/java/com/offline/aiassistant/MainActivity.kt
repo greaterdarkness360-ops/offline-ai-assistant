@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Minta izin membaca kontak otomatis saat pertama dibuka
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), 101)
         }
@@ -132,7 +133,7 @@ fun TowrTheme(content: @Composable () -> Unit) {
 }
 
 /**
- * Resolusi URI Dokumen dari File Picker HP ke Path Fisik Absolut
+ * Mengubah URI berkas dari File Picker HP menjadi path absolut fisik untuk Engine C++ LiteRT
  */
 fun resolveRealPathFromUri(context: Context, uri: Uri): String? {
     if (uri.scheme == "file") return uri.path
@@ -198,8 +199,10 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
     var engineStatusText by remember { mutableStateOf("Memeriksa model on-device...") }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
+    // State reaktif instan untuk mode Hybrid Cloud
     var hybridModeEnabled by remember { mutableStateOf(prefs.getBoolean("hybrid_mode_enabled", false)) }
     var apiKey by remember { mutableStateOf(prefs.getString("gemini_api_key", "") ?: "") }
+    var selectedCloudModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash") }
 
     val messages = remember {
         mutableStateListOf(
@@ -211,7 +214,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         )
     }
 
-    // Peluncur File Picker saat teks model diketuk
+    // Peluncur File Picker saat teks model di-klik
     val modelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -238,7 +241,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         }
     }
 
-    // Muat otomatis dari path yang tersimpan permanen
+    // Muat otomatis model dari path yang tersimpan permanen
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val savedPath = prefs.getString("saved_gemma_model_path", null)
@@ -392,6 +395,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         var usedEngine = ""
                         var cloudDiagnosticError = ""
 
+                        // Memori Konteks Multi-Turn
                         val recentTurns = messages.takeLast(6).filter { !it.isLoading }
                         val historyBuilder = StringBuilder()
                         for (turn in recentTurns) {
@@ -410,28 +414,31 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                             PANDUAN:
                             1. Jika pengguna meminta aksi sistem HP, jawab HANYA dalam format JSON satu baris:
                                - Cari file: {"action": "search_files", "query": "kata_kunci"}
-                               - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_atau_keduanya"}
+                               - Hapus file: {"action": "delete_file", "file_name": "nama_atau_nomor_atau_semua"}
                                - WhatsApp: {"action": "share_wa", "contact_name": "NamaKontak", "text": "isi pesan"}
                                - Buka app: {"action": "open_app", "app_name": "NamaApp"}
-                            2. Jika pertanyaan umum, sapaan santai ("halo, siapakah kau"), atau pertanyaan konteks ("apakah sudah ini semuanya?"), jawab ramah secara manusiawi TANPA format JSON.
+                            2. Jika pertanyaan umum, sapaan santai ("halo, siapakah kau"), atau pertanyaan evaluasi konteks ("apakah sudah ini semuanya?"), jawab ramah secara manusiawi TANPA format JSON.
                         """.trimIndent()
 
                         val finalRouterResponse = withContext(Dispatchers.IO) {
+                            // 1. Coba Gemini Cloud jika aktif dengan model stabil pilihan
                             if (isCloudActive) {
                                 val cloudRes = GeminiCloudEngine.askGeminiFlash(
                                     apiKey = apiKey,
                                     systemPrompt = systemInstruction,
                                     conversationHistory = historyBuilder.toString(),
-                                    userPrompt = promptText
+                                    userPrompt = promptText,
+                                    customModelName = selectedCloudModel
                                 )
                                 if (!cloudRes.startsWith("ERROR")) {
                                     rawAiOutput = cloudRes
-                                    usedEngine = "Gemini 1.5 Flash (Cloud)"
+                                    usedEngine = "Gemini Flash ($selectedCloudModel)"
                                 } else {
                                     cloudDiagnosticError = cloudRes
                                 }
                             }
 
+                            // 2. Fallback ke Gemma On-Device GPU jika cloud gagal atau nonaktif
                             if (rawAiOutput.isBlank()) {
                                 if (gemmaEngine.isModelLoaded) {
                                     val fullLocalPrompt = "$systemInstruction\n\n$historyBuilder\nPengguna: $promptText\nTOWR:"
@@ -442,7 +449,7 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                                 }
                             }
 
-                            // Pemisahan Respon Alami vs Aksi Sistem
+                            // 3. Logika Pemisahan Alami: JSON diproses ActionRouter, Teks percakapan ditampilkan langsung
                             if (rawAiOutput.isNotBlank() && rawAiOutput.contains("\"action\"")) {
                                 actionRouter.processInstruction(rawAiOutput)
                             } else if (rawAiOutput.isNotBlank() && !rawAiOutput.startsWith("MODEL_NOT_READY")) {
@@ -492,8 +499,10 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
             prefs = prefs,
             onDismiss = {
                 showSettingsDialog = false
+                // Sinkronisasi preferensi langsung ke variabel state reaktif
                 hybridModeEnabled = prefs.getBoolean("hybrid_mode_enabled", false)
                 apiKey = prefs.getString("gemini_api_key", "") ?: ""
+                selectedCloudModel = prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
             }
         )
     }
@@ -610,7 +619,7 @@ fun TowrTopBar(
 fun QuickActionChipsRow(onChipClicked: (String) -> Unit) {
     val quickActions = listOf(
         Pair("🔍 Cari File...", "cari file "),
-        Pair("⏰ 24 Jam Terakhir", "cari file paling baru"),
+        Pair("⏰ 24 Jam Terakhir", "cari file paling baru 24 jam terakhir"),
         Pair("📑 File Duplikat", "file ganda"),
         Pair("📱 Pemakaian HP", "pemakaian aplikasi"),
         Pair("💬 Chat WhatsApp", "kirim wa ke ")
@@ -923,6 +932,7 @@ fun TowrSettingsDialog(
     onDismiss: () -> Unit
 ) {
     var localKey by remember { mutableStateOf(prefs.getString("gemini_api_key", "") ?: "") }
+    var localModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash") }
     var localHybrid by remember { mutableStateOf(prefs.getBoolean("hybrid_mode_enabled", false)) }
     var temp by remember { mutableStateOf(prefs.getFloat("ai_temperature", 0.8f)) }
 
@@ -937,7 +947,7 @@ fun TowrSettingsDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Mode Hybrid Cloud (Gemini Free Tier):", color = TowrTextSecondary, fontSize = 12.sp)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -956,10 +966,24 @@ fun TowrSettingsDialog(
                     OutlinedTextField(
                         value = localKey,
                         onValueChange = { localKey = it },
-                        label = { Text("Gemini API Key (Google AI Studio)", fontSize = 11.sp) },
-                        placeholder = { Text("Masukkan API Key resmi Anda", fontSize = 11.sp, color = TowrTextSecondary) },
+                        label = { Text("Gemini API Key", fontSize = 11.sp) },
+                        placeholder = { Text("Tempel API Key resmi Anda (...hz34)", fontSize = 11.sp, color = TowrTextSecondary) },
                         modifier = Modifier.fillMaxWidth(),
-                        maxLines = 3,
+                        maxLines = 2,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TowrTextPrimary,
+                            unfocusedTextColor = TowrTextPrimary,
+                            focusedBorderColor = TowrElectricCyan,
+                            unfocusedBorderColor = TowrBorderDim
+                        )
+                    )
+
+                    OutlinedTextField(
+                        value = localModel,
+                        onValueChange = { localModel = it },
+                        label = { Text("Model Cloud (Default: gemini-2.0-flash)", fontSize = 11.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = TowrTextPrimary,
                             unfocusedTextColor = TowrTextPrimary,
@@ -983,6 +1007,7 @@ fun TowrSettingsDialog(
                 onClick = {
                     prefs.edit()
                         .putString("gemini_api_key", localKey.trim())
+                        .putString("gemini_selected_model", localModel.trim().ifBlank { "gemini-2.0-flash" })
                         .putBoolean("hybrid_mode_enabled", localHybrid)
                         .putFloat("ai_temperature", temp)
                         .apply()
