@@ -32,14 +32,14 @@ typealias FileSearchResult = FileItemInfo
 class FileTools(private val context: Context) {
 
     companion object {
-        // Memori statis hasil pencarian terakhir untuk rujukan "file pertama", "file kedua", dll.
         val lastSearchResults = mutableListOf<FileItemInfo>()
+        var lastSearchQuery: String = ""
     }
 
     /**
-     * Pencarian Hybrid Super Cepat:
-     * 1. Query MediaStore API (Index SQLite instan)
-     * 2. Direct Scan folder pengguna (Download, Documents, WhatsApp, dsb) tanpa menyentuh folder /Android/
+     * Pencarian Berkas Presisi Tinggi:
+     * - Memecah query menjadi multi-token (mencocokkan "blue soap", "blue_soap", "blue-soap")
+     * - Memindai MediaStore + Pemindaian mendalam hingga level 8 pada direktori berkas pengguna
      */
     fun searchFilesAdvanced(
         query: String = "",
@@ -48,16 +48,21 @@ class FileTools(private val context: Context) {
         sortBy: String? = null
     ): List<FileItemInfo> {
         val cleanQuery = query.trim()
+        lastSearchQuery = cleanQuery
         val foundMap = mutableMapOf<String, FileItemInfo>()
+
+        val tokens = cleanQuery.lowercase()
+            .split(Regex("[\\s_\\-]+"))
+            .filter { it.isNotBlank() }
 
         // 1. Jalur MediaStore API
         try {
-            queryMediaStore(cleanQuery, foundMap)
+            queryMediaStore(tokens, foundMap)
         } catch (_: Exception) {}
 
-        // 2. Jalur Direct Scan Folder Dokumen Pengguna (Menjamin file skripsi/non-media pasti ketemu)
+        // 2. Jalur Pemindaian Mendalam Penyimpanan Dokumen Fisik
         try {
-            scanUserDocumentFolders(cleanQuery, foundMap)
+            scanAllUserFolders(tokens, foundMap)
         } catch (_: Exception) {}
 
         var filteredList = foundMap.values.toList()
@@ -79,7 +84,7 @@ class FileTools(private val context: Context) {
             else -> filteredList.sortedByDescending { it.lastModifiedTimestamp }
         }
 
-        // Simpan ke memori aktif untuk resolusi perintah berikutnya
+        // Simpan ke memori aktif
         lastSearchResults.clear()
         lastSearchResults.addAll(filteredList)
 
@@ -89,14 +94,9 @@ class FileTools(private val context: Context) {
     fun searchFiles(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
     fun searchLocal(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
 
-    /**
-     * Resolusi cerdas untuk perintah seperti:
-     * "file kedua", "yang ke-2", "nomor 1", "terakhir", atau nama file spesifik.
-     */
     fun resolveTargetFile(reference: String): FileItemInfo? {
         val clean = reference.trim().lowercase()
 
-        // 1. Cek apakah merujuk ke nomor urutan hasil pencarian di layar
         val targetIndex: Int? = when {
             clean.contains("pertama") || clean.contains("kesatu") || clean == "1" || clean.contains("ke-1") || clean.contains("ke 1") || clean.contains("nomor 1") || clean.contains("no 1") -> 0
             clean.contains("kedua") || clean == "2" || clean.contains("ke-2") || clean.contains("ke 2") || clean.contains("nomor 2") || clean.contains("no 2") -> 1
@@ -115,20 +115,15 @@ class FileTools(private val context: Context) {
             return lastSearchResults[targetIndex]
         }
 
-        // 2. Cek kecocokan nama dalam hasil pencarian terakhir
         val matchedInRecent = lastSearchResults.firstOrNull {
             it.name.contains(clean, ignoreCase = true) || clean.contains(it.name.substringBeforeLast(".").lowercase())
         }
         if (matchedInRecent != null) return matchedInRecent
 
-        // 3. Jika belum ketemu, lakukan pencarian langsung di penyimpanan
         val directSearch = searchFilesAdvanced(clean)
         return directSearch.firstOrNull()
     }
 
-    /**
-     * Eksekusi penghapusan fisik berkas secara aman
-     */
     fun deletePhysicalFile(filePath: String): String {
         return try {
             val file = File(filePath)
@@ -151,7 +146,7 @@ class FileTools(private val context: Context) {
         return deletePhysicalFile(target.path)
     }
 
-    private fun queryMediaStore(query: String, outputMap: MutableMap<String, FileItemInfo>) {
+    private fun queryMediaStore(tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>) {
         val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL)
         } else {
@@ -166,10 +161,12 @@ class FileTools(private val context: Context) {
             MediaStore.Files.FileColumns.DATE_MODIFIED
         )
 
-        val selection = if (query.isNotBlank()) {
-            "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? COLLATE NOCASE"
+        val selection = if (tokens.isNotEmpty()) {
+            tokens.joinToString(" AND ") { "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? COLLATE NOCASE" }
         } else null
-        val selectionArgs = if (query.isNotBlank()) arrayOf("%$query%") else null
+        val selectionArgs = if (tokens.isNotEmpty()) {
+            tokens.map { "%$it%" }.toTypedArray()
+        } else null
 
         val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
 
@@ -186,7 +183,7 @@ class FileTools(private val context: Context) {
                 val dateSec = if (dateCol != -1) cursor.getLong(dateCol) else 0L
                 val dateMs = dateSec * 1000L
 
-                if (path.isNotBlank() && !path.contains("/Android/")) {
+                if (path.isNotBlank() && !path.contains("/Android/data") && !path.contains("/Android/obb")) {
                     val file = File(path)
                     val ext = file.extension.uppercase()
                     outputMap[path] = FileItemInfo(
@@ -203,41 +200,44 @@ class FileTools(private val context: Context) {
         }
     }
 
-    private fun scanUserDocumentFolders(query: String, outputMap: MutableMap<String, FileItemInfo>) {
+    private fun scanAllUserFolders(tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>) {
         val storageRoot = Environment.getExternalStorageDirectory() ?: return
         val targetFolders = listOf(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
             File(storageRoot, "WhatsApp/Media/WhatsApp Documents"),
-            File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents")
+            File(storageRoot, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents"),
+            File(storageRoot, "Telegram/Telegram Documents")
         )
 
         for (folder in targetFolders) {
             if (folder.exists() && folder.canRead()) {
-                scanFolderRecursively(folder, query, outputMap, depth = 0)
+                scanFolderRecursively(folder, tokens, outputMap, depth = 0)
             }
         }
 
-        // Pindai folder buatan pengguna di root internal storage (lewati folder Android dan hidden)
         storageRoot.listFiles()?.forEach { rootChild ->
             if (rootChild.isDirectory && !rootChild.name.startsWith(".") && rootChild.name != "Android") {
-                scanFolderRecursively(rootChild, query, outputMap, depth = 0)
+                scanFolderRecursively(rootChild, tokens, outputMap, depth = 0)
             }
         }
     }
 
-    private fun scanFolderRecursively(dir: File, query: String, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
-        if (depth > 3) return
+    private fun scanFolderRecursively(dir: File, tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
+        if (depth > 8) return // Kedalaman hingga level 8 agar seluruh subfolder skripsi/dokumen ditemukan
         val files = dir.listFiles() ?: return
 
         for (file in files) {
             if (file.isDirectory) {
                 if (!file.name.startsWith(".") && file.name != "Android") {
-                    scanFolderRecursively(file, query, outputMap, depth + 1)
+                    scanFolderRecursively(file, tokens, outputMap, depth + 1)
                 }
             } else {
-                if (query.isBlank() || file.name.contains(query, ignoreCase = true)) {
+                val fileNameLower = file.name.lowercase()
+                val isMatch = if (tokens.isEmpty()) true else tokens.all { token -> fileNameLower.contains(token) }
+
+                if (isMatch) {
                     val path = file.absolutePath
                     if (!outputMap.containsKey(path)) {
                         outputMap[path] = FileItemInfo(
@@ -316,9 +316,6 @@ class FileTools(private val context: Context) {
         return duplicates
     }
 
-    /**
-     * Konversi Gambar ke PDF menggunakan API Native Android (android.graphics.pdf.PdfDocument)
-     */
     fun convertImagesToPdf(imageNames: List<String>, outputPdfName: String): String {
         return try {
             val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
