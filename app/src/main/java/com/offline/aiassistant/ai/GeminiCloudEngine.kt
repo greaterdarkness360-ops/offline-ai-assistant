@@ -12,39 +12,54 @@ import java.net.URL
 
 object GeminiCloudEngine {
 
-    @Volatile
-    private var cachedModelName: String? = null
-
     suspend fun askGeminiFlash(
         apiKey: String,
         systemPrompt: String,
         conversationHistory: String,
-        userPrompt: String
+        userPrompt: String,
+        customModelName: String? = null
     ): String = withContext(Dispatchers.IO) {
         val cleanKey = apiKey.trim()
         if (cleanKey.isBlank()) {
             return@withContext "ERROR: API Key Gemini belum diatur di menu Pengaturan [⚙️]."
         }
 
-        // Daftar model resmi Google terbaru (dimulai dari gemini-3.8-flash sesuai instruksi server Google)
-        val defaultCandidates = listOf(
+        // Daftar model resmi Google dari yang paling stabil & kapasitas server terbesar
+        val modelsToTry = mutableListOf<String>()
+        if (!customModelName.isNullOrBlank()) {
+            modelsToTry.add(customModelName.trim().removePrefix("models/"))
+        }
+        // Tambahkan model-model stabil dengan server besar
+        listOf(
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-flash-8b",
             "gemini-3.8-flash",
-            "gemini-3.5-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash"
-        )
+            "gemini-2.5-flash"
+        ).forEach { if (!modelsToTry.contains(it)) modelsToTry.add(it) }
 
-        var modelToUse = cachedModelName ?: autoDetectAvailableModel(cleanKey)
-        if (modelToUse.startsWith("ERROR:")) {
-            modelToUse = defaultCandidates.first()
+        val fullInstruction = buildString {
+            append(systemPrompt)
+            if (conversationHistory.isNotBlank()) {
+                append("\n\n[RIWAYAT OBROLAN]:\n")
+                append(conversationHistory)
+            }
+            append("\n\nPengguna: ")
+            append(userPrompt)
+            append("\nTOWR:")
         }
 
-        var attempts = 0
-        var currentModel = modelToUse
+        val partObject = JSONObject().put("text", fullInstruction)
+        val partsArray = JSONArray().put(partObject)
+        val contentObject = JSONObject().put("parts", partsArray)
+        val contentsArray = JSONArray().put(contentObject)
+        val rootJson = JSONObject().put("contents", contentsArray)
+        val jsonPayloadString = rootJson.toString()
 
-        while (attempts < 3) {
-            attempts++
-            val cleanModel = currentModel.removePrefix("models/").trim()
+        var lastDiagnostic = ""
+
+        for (modelName in modelsToTry) {
+            val cleanModel = modelName.trim()
             val generateUrl = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$cleanKey"
 
             try {
@@ -56,25 +71,8 @@ object GeminiCloudEngine {
                 conn.readTimeout = 12000
                 conn.doOutput = true
 
-                val fullInstruction = buildString {
-                    append(systemPrompt)
-                    if (conversationHistory.isNotBlank()) {
-                        append("\n\n[RIWAYAT OBROLAN]:\n")
-                        append(conversationHistory)
-                    }
-                    append("\n\nPengguna: ")
-                    append(userPrompt)
-                    append("\nTOWR:")
-                }
-
-                val partObject = JSONObject().put("text", fullInstruction)
-                val partsArray = JSONArray().put(partObject)
-                val contentObject = JSONObject().put("parts", partsArray)
-                val contentsArray = JSONArray().put(contentObject)
-                val rootJson = JSONObject().put("contents", contentsArray)
-
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
-                    writer.write(rootJson.toString())
+                    writer.write(jsonPayloadString)
                     writer.flush()
                 }
 
@@ -91,7 +89,6 @@ object GeminiCloudEngine {
                         val content = candidate.optJSONObject("content")
                         val parts = content?.optJSONArray("parts")
                         if (parts != null && parts.length() > 0) {
-                            cachedModelName = cleanModel // Kunci model yang terbukti aktif
                             return@withContext parts.getJSONObject(0).optString("text").trim()
                         }
                     }
@@ -102,76 +99,21 @@ object GeminiCloudEngine {
                         BufferedReader(InputStreamReader(errorStream, "UTF-8")).readText()
                     } else "HTTP $responseCode"
 
-                    // Auto-Healing: Jika Google menyarankan model di dalam pesan errornya, langsung ambil dan coba!
-                    val suggestedMatch = Regex("Please update your code to use models/([a-zA-Z0-9._-]+)").find(errorMsg)
-                    if (suggestedMatch != null) {
-                        val suggestedModel = suggestedMatch.groupValues[1]
-                        currentModel = suggestedModel
-                        continue
-                    }
+                    lastDiagnostic = "Model $cleanModel ($responseCode): $errorMsg"
 
-                    if (responseCode == 404 && attempts < defaultCandidates.size) {
-                        currentModel = defaultCandidates[attempts]
+                    // Jika error 503 (Server Penuh / High Demand), 404 (Tidak Ada), atau 429 (Limit Sementara)
+                    // JANGAN BERHENTI, langsung lompat mencoba model alternatif berikutnya!
+                    if (responseCode in listOf(503, 404, 429)) {
                         continue
                     }
 
                     return@withContext "ERROR: Google AI Studio ($responseCode): $errorMsg"
                 }
             } catch (e: Exception) {
-                return@withContext "ERROR: Kendala koneksi ke Gemini Cloud: ${e.localizedMessage}"
+                lastDiagnostic = "Model $cleanModel: ${e.localizedMessage}"
             }
         }
 
-        "ERROR: Gagal terhubung ke Gemini Cloud setelah beberapa percobaan."
-    }
-
-    private fun autoDetectAvailableModel(apiKey: String): String {
-        return try {
-            val listUrl = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
-            val conn = URL(listUrl).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-
-            val code = conn.responseCode
-            if (code == HttpURLConnection.HTTP_OK) {
-                val responseStr = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).readText()
-                val json = JSONObject(responseStr)
-                val modelsArray = json.optJSONArray("models") ?: JSONArray()
-
-                val supportedModels = mutableListOf<String>()
-                for (i in 0 until modelsArray.length()) {
-                    val m = modelsArray.getJSONObject(i)
-                    val name = m.optString("name").removePrefix("models/")
-                    val methods = m.optJSONArray("supportedGenerationMethods") ?: JSONArray()
-                    var canGenerate = false
-                    for (j in 0 until methods.length()) {
-                        if (methods.getString(j) == "generateContent") {
-                            canGenerate = true
-                            break
-                        }
-                    }
-                    if (canGenerate && name.isNotBlank()) {
-                        supportedModels.add(name)
-                    }
-                }
-
-                if (supportedModels.isEmpty()) return "gemini-3.8-flash"
-
-                // Urutkan prioritas: 3.8-flash -> 3.5-flash -> flash generasi baru
-                val preferred = supportedModels.firstOrNull { it.contains("3.8-flash", ignoreCase = true) }
-                    ?: supportedModels.firstOrNull { it.contains("3.5-flash", ignoreCase = true) }
-                    ?: supportedModels.firstOrNull { it.contains("3-flash", ignoreCase = true) }
-                    ?: supportedModels.firstOrNull { it.contains("flash", ignoreCase = true) && !it.contains("2.5") && !it.contains("1.5") }
-                    ?: supportedModels.firstOrNull { it.contains("flash", ignoreCase = true) }
-                    ?: supportedModels.first()
-
-                preferred
-            } else {
-                "gemini-3.8-flash"
-            }
-        } catch (_: Exception) {
-            "gemini-3.8-flash"
-        }
+        "ERROR: Seluruh server model Gemini Cloud sedang padat/tidak merespon. Terakhir: $lastDiagnostic"
     }
 }
