@@ -103,7 +103,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Minta izin membaca kontak otomatis saat pertama dibuka
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), 101)
         }
@@ -132,9 +131,6 @@ fun TowrTheme(content: @Composable () -> Unit) {
     )
 }
 
-/**
- * Mengubah URI berkas dari File Picker HP menjadi path absolut fisik untuk Engine C++ LiteRT
- */
 fun resolveRealPathFromUri(context: Context, uri: Uri): String? {
     if (uri.scheme == "file") return uri.path
 
@@ -199,10 +195,9 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
     var engineStatusText by remember { mutableStateOf("Memeriksa model on-device...") }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
-    // State reaktif instan untuk mode Hybrid Cloud
     var hybridModeEnabled by remember { mutableStateOf(prefs.getBoolean("hybrid_mode_enabled", false)) }
     var apiKey by remember { mutableStateOf(prefs.getString("gemini_api_key", "") ?: "") }
-    var selectedCloudModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash") }
+    var selectedCloudModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-3.8-flash") ?: "gemini-3.8-flash") }
 
     val messages = remember {
         mutableStateListOf(
@@ -214,7 +209,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         )
     }
 
-    // Peluncur File Picker saat teks model di-klik
     val modelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -241,7 +235,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
         }
     }
 
-    // Muat otomatis model dari path yang tersimpan permanen
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val savedPath = prefs.getString("saved_gemma_model_path", null)
@@ -285,6 +278,17 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
             isHybrid = hybridModeEnabled && apiKey.isNotBlank(),
             onModelTextClick = {
                 modelPickerLauncher.launch(arrayOf("*/*"))
+            },
+            onBadgeClick = {
+                if (hybridModeEnabled && apiKey.isNotBlank()) {
+                    coroutineScope.launch {
+                        Toast.makeText(context, "Memeriksa status Gemini Cloud...", Toast.LENGTH_SHORT).show()
+                        val testRes = GeminiCloudEngine.testConnection(apiKey, selectedCloudModel)
+                        Toast.makeText(context, testRes.second, Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(context, "Mode 100% Offline (Tanpa Internet)", Toast.LENGTH_SHORT).show()
+                }
             },
             onSettingsClick = { showSettingsDialog = true },
             onClearHistoryClick = {
@@ -395,7 +399,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         var usedEngine = ""
                         var cloudDiagnosticError = ""
 
-                        // Memori Konteks Multi-Turn
                         val recentTurns = messages.takeLast(6).filter { !it.isLoading }
                         val historyBuilder = StringBuilder()
                         for (turn in recentTurns) {
@@ -421,7 +424,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                         """.trimIndent()
 
                         val finalRouterResponse = withContext(Dispatchers.IO) {
-                            // 1. Coba Gemini Cloud jika aktif dengan model stabil pilihan
                             if (isCloudActive) {
                                 val cloudRes = GeminiCloudEngine.askGeminiFlash(
                                     apiKey = apiKey,
@@ -438,7 +440,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                                 }
                             }
 
-                            // 2. Fallback ke Gemma On-Device GPU jika cloud gagal atau nonaktif
                             if (rawAiOutput.isBlank()) {
                                 if (gemmaEngine.isModelLoaded) {
                                     val fullLocalPrompt = "$systemInstruction\n\n$historyBuilder\nPengguna: $promptText\nTOWR:"
@@ -449,7 +450,6 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
                                 }
                             }
 
-                            // 3. Logika Pemisahan Alami: JSON diproses ActionRouter, Teks percakapan ditampilkan langsung
                             if (rawAiOutput.isNotBlank() && rawAiOutput.contains("\"action\"")) {
                                 actionRouter.processInstruction(rawAiOutput)
                             } else if (rawAiOutput.isNotBlank() && !rawAiOutput.startsWith("MODEL_NOT_READY")) {
@@ -499,10 +499,9 @@ fun TowrMainScreen(gemmaEngine: GemmaEngine, actionRouter: ActionRouter) {
             prefs = prefs,
             onDismiss = {
                 showSettingsDialog = false
-                // Sinkronisasi preferensi langsung ke variabel state reaktif
                 hybridModeEnabled = prefs.getBoolean("hybrid_mode_enabled", false)
                 apiKey = prefs.getString("gemini_api_key", "") ?: ""
-                selectedCloudModel = prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
+                selectedCloudModel = prefs.getString("gemini_selected_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
             }
         )
     }
@@ -514,6 +513,7 @@ fun TowrTopBar(
     isLoaded: Boolean,
     isHybrid: Boolean,
     onModelTextClick: () -> Unit,
+    onBadgeClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onClearHistoryClick: () -> Unit
 ) {
@@ -583,12 +583,14 @@ fun TowrTopBar(
                     Icon(Icons.Default.Delete, contentDescription = "Hapus Riwayat", tint = TowrTextSecondary, modifier = Modifier.size(19.dp))
                 }
 
+                // Badge Interaktif (Bisa diketuk untuk tes diagnosa realtime)
                 if (isHybrid) {
                     Row(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color(0xFF0C2A3A))
                             .border(1.dp, TowrElectricCyan, RoundedCornerShape(8.dp))
+                            .clickable { onBadgeClick() }
                             .padding(horizontal = 8.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -602,6 +604,7 @@ fun TowrTopBar(
                             .clip(RoundedCornerShape(8.dp))
                             .background(TowrGreenBg)
                             .border(1.dp, TowrEmeraldGreen, RoundedCornerShape(8.dp))
+                            .clickable { onBadgeClick() }
                             .padding(horizontal = 8.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -926,15 +929,23 @@ fun TowrInputBar(
     }
 }
 
+// =========================================================================
+// 8. DIALOG PENGATURAN DENGAN FITUR TES DIAGNOSA REALTIME
+// =========================================================================
 @Composable
 fun TowrSettingsDialog(
     prefs: android.content.SharedPreferences,
     onDismiss: () -> Unit
 ) {
+    val coroutineScope = rememberCoroutineScope()
+
     var localKey by remember { mutableStateOf(prefs.getString("gemini_api_key", "") ?: "") }
-    var localModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-2.0-flash") ?: "gemini-2.0-flash") }
+    var localModel by remember { mutableStateOf(prefs.getString("gemini_selected_model", "gemini-3.8-flash") ?: "gemini-3.8-flash") }
     var localHybrid by remember { mutableStateOf(prefs.getBoolean("hybrid_mode_enabled", false)) }
     var temp by remember { mutableStateOf(prefs.getFloat("ai_temperature", 0.8f)) }
+
+    var testStatusText by remember { mutableStateOf("") }
+    var isTestingConnection by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -981,7 +992,7 @@ fun TowrSettingsDialog(
                     OutlinedTextField(
                         value = localModel,
                         onValueChange = { localModel = it },
-                        label = { Text("Model Cloud (Default: gemini-2.0-flash)", fontSize = 11.sp) },
+                        label = { Text("Model Cloud (Default: gemini-3.8-flash)", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
@@ -991,6 +1002,44 @@ fun TowrSettingsDialog(
                             unfocusedBorderColor = TowrBorderDim
                         )
                     )
+
+                    // TOMBOL TES DIAGNOSTIK REALTIME
+                    Button(
+                        onClick = {
+                            isTestingConnection = true
+                            testStatusText = "Menghubungi server Google AI Studio..."
+                            coroutineScope.launch {
+                                val result = GeminiCloudEngine.testConnection(localKey, localModel)
+                                isTestingConnection = false
+                                testStatusText = result.second
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TowrSurfaceElevated),
+                        border = BorderStroke(1.dp, TowrElectricCyan),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 6.dp)
+                    ) {
+                        if (isTestingConnection) {
+                            CircularProgressIndicator(color = TowrElectricCyan, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text("⚡ Tes Koneksi Cloud Sekarang", color = TowrElectricCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // TAMPILAN STATUS HASIL DIAGNOSTIK
+                    if (testStatusText.isNotBlank()) {
+                        Text(
+                            text = testStatusText,
+                            color = when {
+                                testStatusText.startsWith("🟢") -> TowrEmeraldGreen
+                                testStatusText.startsWith("🟡") -> Color(0xFFFFB74D)
+                                else -> TowrRedDanger
+                            },
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
                 }
 
                 Text("Temperatur AI: ${String.format(Locale.US, "%.1f", temp)}", color = TowrTextSecondary, fontSize = 12.sp)
@@ -1007,7 +1056,7 @@ fun TowrSettingsDialog(
                 onClick = {
                     prefs.edit()
                         .putString("gemini_api_key", localKey.trim())
-                        .putString("gemini_selected_model", localModel.trim().ifBlank { "gemini-2.0-flash" })
+                        .putString("gemini_selected_model", localModel.trim().ifBlank { "gemini-3.8-flash" })
                         .putBoolean("hybrid_mode_enabled", localHybrid)
                         .putFloat("ai_temperature", temp)
                         .apply()
