@@ -36,11 +36,6 @@ class FileTools(private val context: Context) {
         var lastSearchQuery: String = ""
     }
 
-    /**
-     * Pencarian Berkas Presisi Tinggi:
-     * - Memecah query menjadi multi-token (mencocokkan "blue soap", "blue_soap", "blue-soap")
-     * - Memindai MediaStore + Pemindaian mendalam hingga level 8 pada direktori berkas pengguna
-     */
     fun searchFilesAdvanced(
         query: String = "",
         minSizeMb: Double? = null,
@@ -55,19 +50,16 @@ class FileTools(private val context: Context) {
             .split(Regex("[\\s_\\-]+"))
             .filter { it.isNotBlank() }
 
-        // 1. Jalur MediaStore API
         try {
             queryMediaStore(tokens, foundMap)
         } catch (_: Exception) {}
 
-        // 2. Jalur Pemindaian Mendalam Penyimpanan Dokumen Fisik
         try {
             scanAllUserFolders(tokens, foundMap)
         } catch (_: Exception) {}
 
         var filteredList = foundMap.values.toList()
 
-        // Filter ukuran jika ada
         if (minSizeMb != null) {
             val minBytes = (minSizeMb * 1024 * 1024).toLong()
             filteredList = filteredList.filter { it.sizeBytes >= minBytes }
@@ -77,14 +69,12 @@ class FileTools(private val context: Context) {
             filteredList = filteredList.filter { it.sizeBytes <= maxBytes }
         }
 
-        // Pengurutan
         filteredList = when (sortBy?.lowercase()) {
             "largest" -> filteredList.sortedByDescending { it.sizeBytes }
             "oldest" -> filteredList.sortedBy { it.lastModifiedTimestamp }
             else -> filteredList.sortedByDescending { it.lastModifiedTimestamp }
         }
 
-        // Simpan ke memori aktif
         lastSearchResults.clear()
         lastSearchResults.addAll(filteredList)
 
@@ -94,9 +84,20 @@ class FileTools(private val context: Context) {
     fun searchFiles(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
     fun searchLocal(query: String): List<FileItemInfo> = searchFilesAdvanced(query)
 
-    fun resolveTargetFile(reference: String): FileItemInfo? {
+    /**
+     * Resolusi Fleksibel: Menangani Hapus Berkas Tunggal Maupun Massal ("keduanya", "semua", dll)
+     */
+    fun resolveTargetFiles(reference: String): List<FileItemInfo> {
         val clean = reference.trim().lowercase()
 
+        // 1. Cek apakah meminta hapus massal
+        if (clean.contains("keduanya") || clean.contains("semua") || clean.contains("semuanya") || clean.contains("seluruh")) {
+            if (lastSearchResults.isNotEmpty()) {
+                return lastSearchResults.toList()
+            }
+        }
+
+        // 2. Cek apakah merujuk nomor urut tunggal
         val targetIndex: Int? = when {
             clean.contains("pertama") || clean.contains("kesatu") || clean == "1" || clean.contains("ke-1") || clean.contains("ke 1") || clean.contains("nomor 1") || clean.contains("no 1") -> 0
             clean.contains("kedua") || clean == "2" || clean.contains("ke-2") || clean.contains("ke 2") || clean.contains("nomor 2") || clean.contains("no 2") -> 1
@@ -112,38 +113,43 @@ class FileTools(private val context: Context) {
         }
 
         if (targetIndex != null && targetIndex in lastSearchResults.indices) {
-            return lastSearchResults[targetIndex]
+            return listOf(lastSearchResults[targetIndex])
         }
 
-        val matchedInRecent = lastSearchResults.firstOrNull {
+        // 3. Cek kecocokan nama dalam hasil pencarian terakhir
+        val matchedInRecent = lastSearchResults.filter {
             it.name.contains(clean, ignoreCase = true) || clean.contains(it.name.substringBeforeLast(".").lowercase())
         }
-        if (matchedInRecent != null) return matchedInRecent
+        if (matchedInRecent.isNotEmpty()) return matchedInRecent
 
+        // 4. Cari langsung di penyimpanan jika belum ada di memori
         val directSearch = searchFilesAdvanced(clean)
-        return directSearch.firstOrNull()
+        return directSearch
     }
 
-    fun deletePhysicalFile(filePath: String): String {
-        return try {
-            val file = File(filePath)
-            if (!file.exists()) {
-                return "Berkas tidak ditemukan di penyimpanan: ${file.name}"
+    fun deletePhysicalFiles(filePaths: List<String>): String {
+        var successCount = 0
+        var failCount = 0
+
+        for (path in filePaths) {
+            try {
+                val f = File(path)
+                if (f.exists() && f.delete()) {
+                    successCount++
+                    lastSearchResults.removeAll { it.path == path }
+                } else {
+                    failCount++
+                }
+            } catch (_: Exception) {
+                failCount++
             }
-            if (file.delete()) {
-                lastSearchResults.removeAll { it.path == filePath }
-                "Berkas '${file.name}' berhasil dihapus secara permanen."
-            } else {
-                "Gagal menghapus berkas '${file.name}'. Pastikan izin penyimpanan aktif."
-            }
-        } catch (e: Exception) {
-            "Terjadi kendala saat menghapus berkas: ${e.localizedMessage}"
         }
-    }
 
-    fun deleteFileByName(nameOrOrdinal: String): String {
-        val target = resolveTargetFile(nameOrOrdinal) ?: return "Berkas '$nameOrOrdinal' tidak ditemukan untuk dihapus."
-        return deletePhysicalFile(target.path)
+        return when {
+            failCount == 0 -> "Berhasil menghapus $successCount berkas secara permanen."
+            successCount > 0 -> "Berhasil menghapus $successCount berkas, $failCount berkas gagal dihapus."
+            else -> "Gagal menghapus berkas yang dipilih."
+        }
     }
 
     private fun queryMediaStore(tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>) {
@@ -225,7 +231,7 @@ class FileTools(private val context: Context) {
     }
 
     private fun scanFolderRecursively(dir: File, tokens: List<String>, outputMap: MutableMap<String, FileItemInfo>, depth: Int) {
-        if (depth > 8) return // Kedalaman hingga level 8 agar seluruh subfolder skripsi/dokumen ditemukan
+        if (depth > 8) return
         val files = dir.listFiles() ?: return
 
         for (file in files) {
@@ -257,9 +263,7 @@ class FileTools(private val context: Context) {
 
     fun cleanDuplicateFiles(folderName: String = "Download", deleteDuplicates: Boolean = false): String {
         val targetDir = File(Environment.getExternalStorageDirectory(), folderName)
-        if (!targetDir.exists() || !targetDir.isDirectory) {
-            return "Folder $folderName tidak ditemukan di penyimpanan."
-        }
+        if (!targetDir.exists() || !targetDir.isDirectory) return "Folder $folderName tidak ditemukan."
 
         val fileList = targetDir.listFiles()?.filter { it.isFile } ?: emptyList()
         val nameSizeMap = mutableMapOf<String, File>()
@@ -274,9 +278,7 @@ class FileTools(private val context: Context) {
             }
         }
 
-        if (duplicates.isEmpty()) {
-            return "Tidak ditemukan berkas duplikat di folder $folderName."
-        }
+        if (duplicates.isEmpty()) return "Tidak ditemukan berkas duplikat di folder $folderName."
 
         if (deleteDuplicates) {
             var count = 0
@@ -326,9 +328,7 @@ class FileTools(private val context: Context) {
                 if (f.exists() && f.isFile) validImageFiles.add(f)
             }
 
-            if (validImageFiles.isEmpty()) {
-                return "Tidak ada berkas gambar yang ditemukan di folder Download."
-            }
+            if (validImageFiles.isEmpty()) return "Tidak ada gambar di folder Download."
 
             val outputFile = File(downloadDir, outputPdfName)
             val pdfDocument = PdfDocument()
@@ -342,9 +342,7 @@ class FileTools(private val context: Context) {
                 bitmap.recycle()
             }
 
-            FileOutputStream(outputFile).use { out ->
-                pdfDocument.writeTo(out)
-            }
+            FileOutputStream(outputFile).use { out -> pdfDocument.writeTo(out) }
             pdfDocument.close()
             "Berhasil menggabungkan ${validImageFiles.size} gambar menjadi PDF: ${outputFile.name}"
         } catch (e: Exception) {
