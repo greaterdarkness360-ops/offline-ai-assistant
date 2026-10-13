@@ -13,6 +13,66 @@ import java.net.URL
 
 object GeminiCloudEngine {
 
+    /**
+     * PING DIAGNOSTIK REAL-TIME:
+     * Menguji koneksi langsung ke Google AI Studio tanpa perlu mengirim obrolan manual.
+     * Mengembalikan Pair(isSuccess, diagnosticMessage)
+     */
+    suspend fun testConnection(
+        apiKey: String,
+        modelName: String = "gemini-3.8-flash"
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isBlank()) {
+            return@withContext Pair(false, "API Key belum diisi di kolom Pengaturan.")
+        }
+
+        val cleanModel = modelName.trim().removePrefix("models/").ifBlank { "gemini-3.8-flash" }
+        val testUrl = "https://generativelanguage.googleapis.com/v1beta/models/$cleanModel:generateContent?key=$cleanKey"
+        val startTime = System.currentTimeMillis()
+
+        try {
+            val url = URL(testUrl)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            conn.connectTimeout = 6000
+            conn.readTimeout = 8000
+            conn.doOutput = true
+
+            // Kirim payload pengujian ringan
+            val testPayload = "{\"contents\":[{\"parts\":[{\"text\":\"ping\"}]}]}"
+            OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
+                writer.write(testPayload)
+                writer.flush()
+            }
+
+            val code = conn.responseCode
+            val latency = System.currentTimeMillis() - startTime
+
+            when (code) {
+                HttpURLConnection.HTTP_OK -> {
+                    Pair(true, "🟢 Terhubung Sukses! Gemini ($cleanModel) Siap • Latensi: ${latency}ms")
+                }
+                503 -> {
+                    Pair(false, "🟡 Server Padat (HTTP 503): Antrean Free Tier Google sedang penuh sesaat. Coba beberapa saat lagi.")
+                }
+                429 -> {
+                    Pair(false, "🟡 Limit Kecepatan (HTTP 429): Terlalu banyak permintaan dalam 1 menit.")
+                }
+                404 -> {
+                    Pair(false, "🔴 Model Tidak Ditemukan (HTTP 404): Nama model '$cleanModel' belum aktif.")
+                }
+                else -> {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    Pair(false, "🔴 Gagal (HTTP $code): ${err.take(90)}")
+                }
+            }
+        } catch (e: Exception) {
+            Pair(false, "🔴 Kendala Koneksi: ${e.localizedMessage ?: "Tidak ada jaringan"}")
+        }
+    }
+
     suspend fun askGeminiFlash(
         apiKey: String,
         systemPrompt: String,
@@ -25,7 +85,6 @@ object GeminiCloudEngine {
             return@withContext "ERROR: API Key Gemini belum diatur di menu Pengaturan [⚙️]."
         }
 
-        // Gunakan model yang diketik pengguna, atau default resmi gemini-3.8-flash
         val modelTarget = if (!customModelName.isNullOrBlank() && !customModelName.contains("2.5") && !customModelName.contains("1.5")) {
             customModelName.trim().removePrefix("models/")
         } else {
@@ -53,10 +112,9 @@ object GeminiCloudEngine {
         var lastError = ""
         val maxRetries = 2
 
-        // Percobaan pengiriman dengan jeda jika terkena antrean server 503
         for (attempt in 0..maxRetries) {
             if (attempt > 0) {
-                delay(1500) // Tunggu 1.5 detik sebelum mencoba lagi saat server Google padat
+                delay(1500)
             }
 
             try {
@@ -99,7 +157,6 @@ object GeminiCloudEngine {
 
                     lastError = "Google AI Studio ($responseCode): $errorMsg"
 
-                    // Jika terkena 503 (Server Padat) atau 429 (Batas Waktu), lakukan retry
                     if (responseCode == 503 || responseCode == 429) {
                         continue
                     }
