@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Izin Penyimpanan & Statistik Pemakaian -->
+    <!-- Izin Penyimpanan & Akses Berkas Penuh -->
     <uses-permission 
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
         tools:ignore="ScopedStorage" />
@@ -11,18 +11,14 @@
         android:name="android.permission.PACKAGE_USAGE_STATS" 
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Izin Baca Kontak Lokal -->
+    <!-- Izin Membaca Kontak HP untuk Chat WhatsApp Otomatis -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
-    <!-- Izin Internet Khusus Mode Hybrid Cloud (Gemini Flash) -->
+    <!-- Izin Jaringan untuk Mode Hybrid Cloud (Gemini 1.5 Flash) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <queries>
-        <package android:name="com.whatsapp" />
-        <package android:name="com.whatsapp.w4b" />
-        <package android:name="org.telegram.messenger" />
-
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -31,10 +27,8 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="*/*" />
         </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
+        <package android:name="com.whatsapp" />
+        <package android:name="org.telegram.messenger" />
     </queries>
 
     <application
@@ -45,6 +39,7 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!-- Akselerasi GPU Khusus LiteRT-LM On-Device -->
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
 
