@@ -11,67 +11,79 @@ import java.io.File
 class ShareBridgeTool(private val context: Context) {
 
     /**
-     * Mencari nomor telepon dari nama kontak di buku telepon HP
+     * Mencari nomor telepon kontak HP menggunakan CONTENT_FILTER_URI resmi Android.
+     * Sangat akurat untuk nama panggilan, nama depan, atau nama belakang tanpa case-sensitive.
      */
     fun findContactPhoneNumber(contactName: String): Pair<String, String>? {
-        if (contactName.isBlank()) return null
+        val cleanQuery = contactName.trim()
+            .replace(Regex("^(ke|untuk|pada|chat|wa)\\s+", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        if (cleanQuery.isBlank()) return null
+
         return try {
             val contentResolver = context.contentResolver
-            val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+            val filterUri = Uri.withAppendedPath(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_FILTER_URI,
+                Uri.encode(cleanQuery)
+            )
+
             val projection = arrayOf(
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                 ContactsContract.CommonDataKinds.Phone.NUMBER
             )
-            val selection = "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?"
-            val selectionArgs = arrayOf("%$contactName%")
 
-            contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
+            contentResolver.query(filterUri, projection, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                     val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
                     if (numIdx != -1) {
-                        val realName = if (nameIdx != -1) cursor.getString(nameIdx) else contactName
+                        val realName = if (nameIdx != -1) cursor.getString(nameIdx) else cleanQuery
                         val rawNumber = cursor.getString(numIdx)
-                        return Pair(realName, rawNumber)
-                    }
-                }
+                        Pair(realName, rawNumber)
+                    } else null
+                } else null
             }
-            null
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * Memformat nomor lokal Indonesia menjadi format internasional WhatsApp (628xxx)
-     */
     private fun formatPhoneForWhatsApp(raw: String): String {
-        val digits = raw.replace(Regex("[^0-9]"), "")
-        return when {
-            digits.startsWith("0") -> "62" + digits.substring(1)
-            digits.startsWith("62") -> digits
-            digits.startsWith("8") -> "62$digits"
-            else -> digits
+        var digits = raw.replace(Regex("[^0-9]"), "")
+        if (digits.startsWith("0")) {
+            digits = "62" + digits.substring(1)
+        } else if (digits.startsWith("8")) {
+            digits = "62$digits"
         }
+        return digits
     }
 
     /**
-     * Membagikan teks/pesan langsung ke WhatsApp (ke kontak langsung), Telegram, atau Notion
+     * Langsung membuka ruang obrolan (room chat) kontak target di WhatsApp dengan teks terisi otomatis.
      */
     fun shareTextToApp(text: String, targetApp: String = "general", contactName: String? = null): String {
         return try {
             val isWhatsApp = targetApp.lowercase() in listOf("whatsapp", "wa")
 
-            // Jika tujuan adalah WhatsApp dan nama kontak disebutkan
             if (isWhatsApp && !contactName.isNullOrBlank()) {
-                val contactInfo = findContactPhoneNumber(contactName.trim())
-                if (contactInfo != null) {
-                    val (realName, rawPhone) = contactInfo
-                    val formattedPhone = formatPhoneForWhatsApp(rawPhone)
-                    val encodedText = Uri.encode(text)
+                val cleanContact = contactName.trim()
+                    .replace(Regex("^(ke|untuk|pada)\\s+", RegexOption.IGNORE_CASE), "")
+                    .trim()
 
-                    // URL API WhatsApp resmi untuk membuka chat kontak seketika
-                    val directUri = Uri.parse("https://api.whatsapp.com/send?phone=$formattedPhone&text=$encodedText")
+                val isRawNumber = cleanContact.matches(Regex("^[0-9+\\-\\s()]+$")) && cleanContact.replace(Regex("[^0-9]"), "").length >= 7
+                val targetPhone = if (isRawNumber) {
+                    formatPhoneForWhatsApp(cleanContact)
+                } else {
+                    findContactPhoneNumber(cleanContact)?.let { formatPhoneForWhatsApp(it.second) } ?: ""
+                }
+
+                val displayName = if (isRawNumber) targetPhone else (findContactPhoneNumber(cleanContact)?.first ?: cleanContact)
+
+                if (targetPhone.isNotBlank()) {
+                    val encodedText = if (text.isNotBlank()) Uri.encode(text) else ""
+                    val directUri = Uri.parse("https://api.whatsapp.com/send?phone=$targetPhone&text=$encodedText")
+
                     val directIntent = Intent(Intent.ACTION_VIEW, directUri).apply {
                         setPackage("com.whatsapp")
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -79,22 +91,20 @@ class ShareBridgeTool(private val context: Context) {
 
                     return try {
                         context.startActivity(directIntent)
-                        "Membuka chat WhatsApp langsung ke $realName ($formattedPhone) dengan pesan: '$text'"
-                    } catch (e: Exception) {
+                        "Membuka chat WhatsApp langsung ke $displayName ($targetPhone)."
+                    } catch (_: Exception) {
                         val fallbackIntent = Intent(Intent.ACTION_VIEW, directUri).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         }
                         context.startActivity(fallbackIntent)
-                        "Membuka chat WhatsApp ke $realName ($formattedPhone) dengan pesan: '$text'"
+                        "Membuka chat WhatsApp ke $displayName ($targetPhone)."
                     }
                 } else {
-                    // Kontak tidak ditemukan, buka WhatsApp biasa dengan teks terisi
                     shareGeneralText(text, "com.whatsapp")
-                    return "Kontak '$contactName' tidak ditemukan di buku telepon. Membuka WhatsApp untuk memilih kontak secara manual."
+                    return "Kontak '$cleanContact' tidak ditemukan di buku telepon. Membuka WhatsApp untuk memilih kontak secara manual."
                 }
             }
 
-            // Pengiriman teks umum (Telegram / WhatsApp tanpa kontak tertentu)
             val pkg = when (targetApp.lowercase()) {
                 "telegram", "tele", "tg" -> "org.telegram.messenger"
                 "notion" -> "notion.id"
@@ -103,7 +113,7 @@ class ShareBridgeTool(private val context: Context) {
             }
 
             shareGeneralText(text, pkg)
-            "Berhasil membuka jembatan berbagi ke $targetApp."
+            "Membuka aplikasi $targetApp."
         } catch (e: Exception) {
             "Gagal membagikan teks: ${e.localizedMessage}"
         }
@@ -119,7 +129,7 @@ class ShareBridgeTool(private val context: Context) {
 
         try {
             context.startActivity(intent)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             val chooser = Intent.createChooser(intent.apply { `package` = null }, "Bagikan pesan via...")
             chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(chooser)
@@ -148,11 +158,11 @@ class ShareBridgeTool(private val context: Context) {
             try {
                 context.startActivity(intent)
                 "Berhasil membagikan file '${file.name}' ke$targetApp."
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 val chooser = Intent.createChooser(intent.apply { `package` = null }, "Kirim file ke...")
                 chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(chooser)
-                "Membuka menu berbagi HP untuk file '${file.name}'."
+                "Membuka menu berbagi untuk file '${file.name}'."
             }
         } catch (e: Exception) {
             "Gagal membagikan file: ${e.localizedMessage}"
