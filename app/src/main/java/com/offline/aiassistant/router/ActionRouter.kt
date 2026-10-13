@@ -34,10 +34,13 @@ data class AgentAction(
 )
 
 data class PendingDeleteInfo(
-    val fileName: String,
-    val filePath: String,
-    val fileSizeFormatted: String
-)
+    val files: List<FileItemInfo>,
+    val summaryTitle: String
+) {
+    val fileCount: Int get() = files.size
+    val fileName: String get() = if (files.size == 1) files[0].name else "${files.size} berkas (${files.take(2).joinToString { it.name }}${if (files.size > 2) "..." else ""})"
+    val fileSizeFormatted: String get() = if (files.size == 1) files[0].size else "Total ${files.size} berkas"
+}
 
 data class RouterResponse(
     val message: String,
@@ -75,7 +78,7 @@ class ActionRouter(context: Context) {
         when {
             // DETEKSI PESAN & KONTAK WHATSAPP
             lower.contains("wa") || lower.contains("whatsapp") -> {
-                val match = Regex("(?i)(?:kirim|chat|buka|pesan)?\\s*(?:pesan)?\\s*(?:ke|untuk)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_\\s]+?)(?:\\s*[:,-]\\s*|\\s+pesan\\s+|\\s+isi\\s+)(.*)").find(trimmed)
+                val match = Regex("(?i)(?:kirim|chat|buka|pesan)?\\s*(?:wa|whatsapp)\\s*(?:ke|untuk)?\\s*([a-zA-Z0-9_\\s]+?)(?:\\s*[:,-]\\s*|\\s+pesan\\s+|\\s+isi\\s+)(.*)").find(trimmed)
 
                 if (match != null) {
                     val contactTarget = match.groupValues[1].trim()
@@ -92,7 +95,7 @@ class ActionRouter(context: Context) {
                 }
             }
 
-            // PERINTAH HAPUS BERKAS
+            // PERINTAH HAPUS BERKAS (TUNGGAL ATAU MASSAL)
             lower.startsWith("hapus") || lower.contains("hapus file") || lower.contains("delete") -> {
                 if (lower.contains("ganda") || lower.contains("duplikat") || lower.contains("kembar")) {
                     val msg = fileTools.cleanDuplicateFiles("Download", deleteDuplicates = true)
@@ -104,7 +107,7 @@ class ActionRouter(context: Context) {
                         .trim()
 
                     if (targetName.isBlank()) {
-                        RouterResponse("Sebutkan nama atau nomor urut file yang ingin dihapus.")
+                        RouterResponse("Sebutkan nama atau nomor urut berkas yang ingin dihapus.")
                     } else {
                         prepareDeleteGuardrail(targetName)
                     }
@@ -181,7 +184,6 @@ class ActionRouter(context: Context) {
     private suspend fun executeJsonAction(action: AgentAction, originalInput: String): RouterResponse {
         val actionName = action.action.lowercase()
 
-        // PENGAMAN KHUSUS DUPLIKAT
         if (actionName == "clean_duplicates") {
             val lowerInput = originalInput.lowercase()
             val isExplicitDuplicate = lowerInput.contains("duplikat") || lowerInput.contains("ganda") || lowerInput.contains("kembar")
@@ -229,14 +231,14 @@ class ActionRouter(context: Context) {
     }
 
     private fun prepareDeleteGuardrail(targetReference: String): RouterResponse {
-        val target = fileTools.resolveTargetFile(targetReference)
-        return if (target != null) {
+        val targets = fileTools.resolveTargetFiles(targetReference)
+        return if (targets.isNotEmpty()) {
+            val title = if (targets.size == 1) "Konfirmasi Hapus: '${targets[0].name}'" else "Konfirmasi Hapus ${targets.size} Berkas Sekaligus"
             RouterResponse(
-                message = "Konfirmasi keamanan: Apakah Anda yakin ingin menghapus berkas '${target.name}'?",
+                message = "Peringatan Keamanan: Apakah Anda yakin ingin menghapus ${targets.size} berkas ini?",
                 pendingDelete = PendingDeleteInfo(
-                    fileName = target.name,
-                    filePath = target.path,
-                    fileSizeFormatted = target.size
+                    files = targets,
+                    summaryTitle = title
                 )
             )
         } else {
@@ -244,8 +246,8 @@ class ActionRouter(context: Context) {
         }
     }
 
-    fun executeConfirmedDelete(filePath: String): String {
-        return fileTools.deletePhysicalFile(filePath)
+    fun executeConfirmedDelete(pendingInfo: PendingDeleteInfo): String {
+        return fileTools.deletePhysicalFiles(pendingInfo.files.map { it.path })
     }
 
     private fun extractImageNames(text: String): List<String> {
