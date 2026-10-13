@@ -1,77 +1,86 @@
 package com.offline.aiassistant.ai
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import com.google.ai.client.generativeai.GenerativeModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 
-class GeminiCloudEngine(private val context: Context) {
+object GeminiCloudEngine {
 
-    private val prefs = context.getSharedPreferences("towr_prefs", Context.MODE_PRIVATE)
-
-    var apiKey: String
-        get() = prefs.getString("gemini_api_key", "") ?: ""
-        set(value) = prefs.edit().putString("gemini_api_key", value).apply()
-
-    private val systemPrompt = """
-        Kamu adalah TOWR, asisten AI pribadi pintar di Android buatan Natanael.
-        Kamu saat ini beroperasi dalam Mode Hybrid (Cloud-Accelerated Gemini Flash).
-        
-        ATURAN RESPON:
-        1. Jika pengguna meminta aksi perangkat, jawab HANYA dalam 1 baris JSON persis:
-           - Kirim WhatsApp: {"action": "share_text", "target_app": "whatsapp", "text": "isi pesan", "contact_name": "nama"}
-           - Kirim file ke WhatsApp: {"action": "share_file", "file_path": "nama_file_atau_nomor", "target_app": "whatsapp"}
-           - Cari file baru/waktu: {"action": "search_files", "query": "nama_file", "hours": 24}
-           - Cari file umum: {"action": "search_files", "query": "nama_file"}
-           - Buka aplikasi: {"action": "open_app", "app_name": "nama_aplikasi"}
-           - Cek file duplikat: {"action": "clean_duplicates", "delete_duplicates": false}
-           - Hapus file duplikat: {"action": "clean_duplicates", "delete_duplicates": true}
-           - Cek pemakaian HP: {"action": "inspect_usage"}
-        2. Jika pengguna mengobrol biasa, bertanya sains, pengetahuan, analisis teks, coding, atau logika, jawablah secara ramah, komprehensif, dan cerdas dalam Bahasa Indonesia tanpa format JSON.
-    """.trimIndent()
-
-    private var generativeModel: GenerativeModel? = null
-
-    fun isOnline(): Boolean {
-        return try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-            val network = cm.activeNetwork ?: return false
-            val caps = cm.getNetworkCapabilities(network) ?: return false
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun getOrCreateModel(): GenerativeModel {
-        val key = apiKey.trim()
-        return GenerativeModel(
-            modelName = "gemini-1.5-flash",
-            apiKey = key
-        )
-    }
-
-    suspend fun askGemini(prompt: String): String = withContext(Dispatchers.IO) {
-        if (!isOnline()) {
-            return@withContext "OFFLINE_FALLBACK"
-        }
+    suspend fun askGeminiFlash(
+        apiKey: String,
+        systemPrompt: String,
+        conversationHistory: String,
+        userPrompt: String
+    ): String = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
-            return@withContext "API_KEY_EMPTY"
+            return@withContext "ERROR: API Key Gemini belum diisi di Pengaturan."
         }
 
         try {
-            val model = generativeModel ?: getOrCreateModel().also { generativeModel = it }
-            val fullPrompt = "$systemPrompt\n\nPengguna: $prompt\nTOWR:"
-            val response = model.generateContent(fullPrompt)
-            response.text?.trim() ?: "Tidak ada balasan dari Gemini Cloud."
-        } catch (e: Exception) {
-            "Gagal komputasi Cloud: ${e.localizedMessage}"
-        }
-    }
+            val urlString = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
+            val url = URL(urlString)
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 15000
+            conn.doOutput = true
 
-    fun resetModel() {
-        generativeModel = null
+            val fullInstruction = buildString {
+                append(systemPrompt)
+                append("\n\nKamu saat ini terhubung langsung secara online ke Google Gemini 1.5 Flash Cloud.")
+                if (conversationHistory.isNotBlank()) {
+                    append("\n\n[RIWAYAT OBROLAN]:\n")
+                    append(conversationHistory)
+                }
+                append("\n\nPengguna: ")
+                append(userPrompt)
+                append("\nTOWR:")
+            }
+
+            val partObject = JSONObject().put("text", fullInstruction)
+            val partsArray = JSONArray().put(partObject)
+            val contentObject = JSONObject().put("parts", partsArray)
+            val contentsArray = JSONArray().put(contentObject)
+            val rootJson = JSONObject().put("contents", contentsArray)
+
+            OutputStreamWriter(conn.outputStream, "UTF-8").use { writer ->
+                writer.write(rootJson.toString())
+                writer.flush()
+            }
+
+            val responseCode = conn.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val reader = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
+                val responseStr = reader.readText()
+                reader.close()
+
+                val responseJson = JSONObject(responseStr)
+                val candidates = responseJson.optJSONArray("candidates")
+                if (candidates != null && candidates.length() > 0) {
+                    val candidate = candidates.getJSONObject(0)
+                    val content = candidate.optJSONObject("content")
+                    val parts = content?.optJSONArray("parts")
+                    if (parts != null && parts.length() > 0) {
+                        return@withContext parts.getJSONObject(0).optString("text").trim()
+                    }
+                }
+                "Jawaban kosong dari server Gemini Flash."
+            } else {
+                val errorStream = conn.errorStream
+                val errorMsg = if (errorStream != null) {
+                    BufferedReader(InputStreamReader(errorStream, "UTF-8")).readText()
+                } else "Kode respons: $responseCode"
+                "Gagal terhubung ke Gemini Flash (HTTP $responseCode): $errorMsg"
+            }
+        } catch (e: Exception) {
+            "Kendala jaringan Gemini Flash: ${e.localizedMessage}"
+        }
     }
 }
